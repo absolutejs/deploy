@@ -122,10 +122,20 @@ const runSpawn = async (
 	});
 
 	if (options.stdin !== undefined && proc.stdin) {
-		const writer = (proc.stdin as { getWriter?: () => { write: (data: Uint8Array) => Promise<void>; close: () => Promise<void> } }).getWriter?.();
-		if (writer) {
-			await writer.write(new TextEncoder().encode(options.stdin));
-			await writer.close();
+		// Bun.spawn returns a FileSink for piped stdin — `write` + `end`, not a
+		// WritableStream. (We use a permissive cast because @types/bun's
+		// Subprocess.stdin discriminant flips based on the stdin generic.)
+		const sink = proc.stdin as unknown as {
+			write: (chunk: string | Uint8Array) => number | Promise<number>;
+			end: () => void | Promise<void>;
+		};
+		const wrote = sink.write(options.stdin);
+		if (wrote && typeof (wrote as Promise<number>).then === 'function') {
+			await wrote;
+		}
+		const ended = sink.end();
+		if (ended && typeof (ended as Promise<void>).then === 'function') {
+			await ended;
 		}
 	}
 

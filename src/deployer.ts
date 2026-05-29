@@ -30,6 +30,19 @@ export type VerifySpec =
 	| { kind: 'tcp'; host: string; port: number; retries?: number; intervalMs?: number }
 	| { kind: 'custom'; check: (ctx: DeployContext) => Promise<boolean> };
 
+export type ReleaseAnnotations = {
+	/** Git commit SHA being deployed (40-char hex; truncated forms accepted). */
+	commitSha?: string;
+	/** Git ref (e.g. `refs/heads/main`, `v1.2.3`). */
+	ref?: string;
+	/** Commit message (or any human-readable description). */
+	message?: string;
+	/** Committer / deployer identity. */
+	author?: string;
+	/** Arbitrary tags for downstream filtering (status pages, audits). */
+	tags?: Record<string, string>;
+};
+
 export type DeployContext = {
 	target: Target;
 	source: Source;
@@ -41,6 +54,9 @@ export type DeployContext = {
 	hooks: ResolvedHooks;
 	processManager: ProcessManager;
 	verify: VerifySpec | null;
+	annotations: ReleaseAnnotations;
+	/** When `true`, steps log what they WOULD do via hooks.onLog and do not mutate the target. */
+	dryRun: boolean;
 };
 
 export type DeployStep = {
@@ -58,6 +74,26 @@ export type DeployHooks = {
 type ResolvedHooks = Required<{
 	[K in keyof DeployHooks]: NonNullable<DeployHooks[K]>;
 }>;
+
+export type DeployOptions = {
+	/** Per-release annotations stored alongside the release dir as `.deploy-meta.json`. */
+	annotations?: ReleaseAnnotations;
+	/**
+	 * When `true`, the deploy plan is logged but no mutation happens on the
+	 * target — steps still call `target.exec` only via `cmd === 'echo'`-style
+	 * dry-run probes. Use this from `gh actions` to verify pipeline shape
+	 * before flipping a real `current` symlink.
+	 */
+	dryRun?: boolean;
+	/**
+	 * Resume a previously-failed release. The deployer reads the release's
+	 * `.deploy-meta.json`, finds the step that died, and starts from there.
+	 * Steps that completed successfully are skipped. Use this when a deploy
+	 * fails on `verify` (e.g. health-check timeout) but the release is
+	 * otherwise intact on disk.
+	 */
+	resumeReleaseId?: string;
+};
 
 export type DeployerOptions = {
 	target: Target;
@@ -79,18 +115,31 @@ export type DeployerOptions = {
 	clock?: () => number;
 };
 
+export type ReleaseRecord = {
+	releaseId: string;
+	annotations: ReleaseAnnotations;
+	status: 'in-progress' | 'completed' | 'failed';
+	failedStep?: string;
+	completedSteps: string[];
+	startedAt: number;
+	endedAt?: number;
+};
+
 export type DeployResult = {
 	releaseId: string;
 	releasePath: string;
 	currentPath: string;
 	durationMs: number;
-	steps: { name: string; durationMs: number }[];
+	steps: { name: string; durationMs: number; skipped?: boolean }[];
+	annotations: ReleaseAnnotations;
 };
 
 export type Deployer = {
-	deploy: () => Promise<DeployResult>;
+	deploy: (options?: DeployOptions) => Promise<DeployResult>;
 	rollback: (releaseId: string) => Promise<DeployResult>;
 	listReleases: () => Promise<string[]>;
+	/** Read the deploy meta for a specific release (or null if missing). */
+	readReleaseMeta: (releaseId: string) => Promise<ReleaseRecord | null>;
 	prune: (options: { keep: number }) => Promise<{ removed: string[] }>;
 	dispose: () => Promise<void>;
 };
@@ -273,9 +322,14 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 	const verify = options.verify === undefined ? null : options.verify;
 	let disposed = false;
 
-	const buildCtx = (releaseId: string): DeployContext => ({
+	const buildCtx = (
+		releaseId: string,
+		opts: { annotations: ReleaseAnnotations; dryRun: boolean },
+	): DeployContext => ({
+		annotations: opts.annotations,
 		appName: options.appName,
 		currentPath,
+		dryRun: opts.dryRun,
 		env,
 		hooks,
 		processManager,
@@ -286,25 +340,116 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 		verify,
 	});
 
-	const runSteps = async (steps: DeployStep[], releaseId: string): Promise<DeployResult> => {
-		const ctx = buildCtx(releaseId);
-		const stepDurations: { name: string; durationMs: number }[] = [];
+	const metaPath = (releaseId: string) => `${releasesPath}/${releaseId}/.deploy-meta.json`;
+
+	const writeMeta = async (releaseId: string, record: ReleaseRecord): Promise<void> => {
+		const json = JSON.stringify(record);
+		// Use stdin to avoid quoting hassles + so the JSON doesn't appear in `ps`.
+		const result = await options.target.exec(`cat > ${metaPath(releaseId)}`, {
+			stdin: json,
+			timeoutMs: 10_000,
+		});
+		if (result.exitCode !== 0) {
+			// Non-fatal — the deploy doesn't depend on the meta file for success.
+			console.warn(`[deploy] writeMeta(${releaseId}) failed: ${result.stderr || result.stdout}`);
+		}
+	};
+
+	const readMeta = async (releaseId: string): Promise<ReleaseRecord | null> => {
+		const result = await options.target.exec(`cat ${metaPath(releaseId)} 2>/dev/null || true`, {
+			timeoutMs: 10_000,
+		});
+		const text = result.stdout.trim();
+		if (text.length === 0) return null;
+		try {
+			return JSON.parse(text) as ReleaseRecord;
+		} catch {
+			return null;
+		}
+	};
+
+	const cleanOrphanedSymlink = async (): Promise<void> => {
+		// A prior deploy that crashed between `ln -sfn ... current.next` and
+		// `mv -Tf current.next current` leaves `current.next` dangling. Clean
+		// it so the next link step's `mv -Tf` is unambiguous.
+		await options.target.exec(`rm -f ${currentPath}.next`, { timeoutMs: 5_000 });
+	};
+
+	const runSteps = async (
+		steps: DeployStep[],
+		releaseId: string,
+		runOpts: {
+			annotations: ReleaseAnnotations;
+			dryRun: boolean;
+			alreadyCompleted: string[];
+		},
+	): Promise<DeployResult> => {
+		const ctx = buildCtx(releaseId, {
+			annotations: runOpts.annotations,
+			dryRun: runOpts.dryRun,
+		});
+		const stepDurations: { name: string; durationMs: number; skipped?: boolean }[] = [];
 		const startedAt = clock();
+		const completedSteps: string[] = [...runOpts.alreadyCompleted];
+
+		const record: ReleaseRecord = {
+			annotations: runOpts.annotations,
+			completedSteps,
+			releaseId,
+			startedAt,
+			status: 'in-progress',
+		};
+		// Write the meta-record as soon as the release directory exists, which
+		// `prepare` sets up. Until then we have nowhere to put it.
+
 		for (const step of steps) {
+			if (completedSteps.includes(step.name) && step.name !== 'verify') {
+				// Resume: skip steps already done. (Always re-run verify so a
+				// healthy probe is recorded post-resume.)
+				stepDurations.push({ durationMs: 0, name: step.name, skipped: true });
+				continue;
+			}
+
 			const stepStartedAt = clock();
 			await hooks.onStepStart({ name: step.name, releaseId });
+
+			if (runOpts.dryRun) {
+				hooks.onLog(`[dry-run] would run: ${step.name}`, 'stdout', step.name);
+				stepDurations.push({ durationMs: 0, name: step.name, skipped: true });
+				await hooks.onStepEnd({ durationMs: 0, name: step.name, releaseId });
+				continue;
+			}
+
 			try {
 				await step.run(ctx);
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
+				record.status = 'failed';
+				record.failedStep = step.name;
+				record.endedAt = clock();
+				// Best-effort meta write so resume() works later.
+				await writeMeta(releaseId, record);
 				await hooks.onError({ error: err, releaseId, step: step.name });
 				throw err;
 			}
+
 			const durationMs = clock() - stepStartedAt;
 			stepDurations.push({ durationMs, name: step.name });
+			completedSteps.push(step.name);
 			await hooks.onStepEnd({ durationMs, name: step.name, releaseId });
+
+			// After `prepare` (the first step that creates the dir), persist meta.
+			if (step.name === 'prepare') {
+				await writeMeta(releaseId, record);
+			}
 		}
+
+		record.status = 'completed';
+		record.endedAt = clock();
+		if (!runOpts.dryRun) await writeMeta(releaseId, record);
+
 		return {
+			annotations: runOpts.annotations,
 			currentPath,
 			durationMs: clock() - startedAt,
 			releaseId,
@@ -319,11 +464,39 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 	};
 
 	return {
-		deploy: async () => {
+		deploy: async (deployOpts: DeployOptions = {}) => {
 			if (disposed) throw new Error('Deployer is disposed');
 			await ensureRoot();
+			await cleanOrphanedSymlink();
+
+			const annotations = deployOpts.annotations ?? {};
+			const dryRun = deployOpts.dryRun ?? false;
+
+			if (deployOpts.resumeReleaseId !== undefined) {
+				const prior = await readMeta(deployOpts.resumeReleaseId);
+				if (!prior) {
+					throw new Error(
+						`resume: no .deploy-meta.json for release ${deployOpts.resumeReleaseId}`,
+					);
+				}
+				if (prior.status === 'completed') {
+					throw new Error(
+						`resume: release ${deployOpts.resumeReleaseId} already completed`,
+					);
+				}
+				return runSteps(options.steps ?? defaultBunPipeline(), deployOpts.resumeReleaseId, {
+					alreadyCompleted: prior.completedSteps,
+					annotations: prior.annotations ?? annotations,
+					dryRun,
+				});
+			}
+
 			const releaseId = makeReleaseId(clock);
-			return runSteps(options.steps ?? defaultBunPipeline(), releaseId);
+			return runSteps(options.steps ?? defaultBunPipeline(), releaseId, {
+				alreadyCompleted: [],
+				annotations,
+				dryRun,
+			});
 		},
 		dispose: async () => {
 			disposed = true;
@@ -361,9 +534,11 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 			}
 			return { removed };
 		},
+		readReleaseMeta: readMeta,
 		rollback: async (releaseId) => {
 			if (disposed) throw new Error('Deployer is disposed');
 			await ensureRoot();
+			await cleanOrphanedSymlink();
 			const exists = await options.target.exec(
 				`test -d ${releasesPath}/${releaseId} && echo ok || echo missing`,
 				{ timeoutMs: 5_000 },
@@ -375,7 +550,12 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 			const rollbackSteps: DeployStep[] = defaultBunPipeline().filter((step) =>
 				step.name === 'link' || step.name === 'restart' || step.name === 'verify',
 			);
-			return runSteps(rollbackSteps, releaseId);
+			const prior = await readMeta(releaseId);
+			return runSteps(rollbackSteps, releaseId, {
+				alreadyCompleted: [],
+				annotations: prior?.annotations ?? {},
+				dryRun: false,
+			});
 		},
 	};
 };

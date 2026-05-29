@@ -131,18 +131,42 @@ describe('createDeployer (pipeline)', () => {
 // Default Bun pipeline — drives the mock target with sane shell commands
 // -----------------------------------------------------------------------------
 
+// Pattern-based mock target: handlers respond to specific command shapes
+// rather than a fixed sequential order — robust to new internal exec calls
+// (writeMeta, cleanOrphanedSymlink, etc.) being added in later versions.
+type PatternHandler = (cmd: string) => Partial<ExecResult> | undefined;
+
+const makePatternTarget = (patterns: PatternHandler[]) => {
+	const execLog: string[] = [];
+	const uploadLog: { local: string; remote: string }[] = [];
+	const target: Target = {
+		description: 'mock-pattern',
+		exec: async (cmd) => {
+			execLog.push(cmd);
+			for (const pattern of patterns) {
+				const reply = pattern(cmd);
+				if (reply !== undefined) {
+					return {
+						exitCode: reply.exitCode ?? 0,
+						stderr: reply.stderr ?? '',
+						stdout: reply.stdout ?? '',
+					};
+				}
+			}
+			return { exitCode: 0, stderr: '', stdout: '' };
+		},
+		upload: async (local, remote) => {
+			uploadLog.push({ local, remote });
+		},
+	};
+	return { execLog, target, uploadLog };
+};
+
 describe('defaultBunPipeline', () => {
 	test('runs prepare, upload, install, link, restart in order against the target', async () => {
-		const handlers: ExecHandler[] = [
-			() => ({}),                                                                     // ensureRoot mkdir releases
-			() => ({}),                                                                     // prepare: mkdir release dir
-			() => ({ stdout: '' }),                                                          // build: grep package.json (no build script)
-			() => ({}),                                                                     // install: bun install
-			() => ({}),                                                                     // link: ln + mv
-			() => ({}),                                                                     // bareManager.reload: stop
-			() => ({}),                                                                     // bareManager.reload: start
-		];
-		const { execLog, target, uploadLog } = makeMockTarget(handlers);
+		const { execLog, target, uploadLog } = makePatternTarget([
+			(cmd) => (cmd.startsWith('grep -E') ? { stdout: '' } : undefined),
+		]);
 		const deployer = createDeployer({
 			appName: 'demo',
 			clock: () => 0,
@@ -167,17 +191,9 @@ describe('defaultBunPipeline', () => {
 	});
 
 	test('build step is skipped when package.json has no build script', async () => {
-		const handlers: ExecHandler[] = [
-			() => ({}), // ensureRoot
-			() => ({}), // prepare
-			() => ({}), // install (bun install)
-			() => ({ stdout: '"name": "x"\n' }), // grep — no "build" key
-			// no build invocation
-			() => ({}), // link
-			() => ({}), // restart stop
-			() => ({}), // restart start
-		];
-		const { execLog, target } = makeMockTarget(handlers);
+		const { execLog, target } = makePatternTarget([
+			(cmd) => (cmd.startsWith('grep -E') ? { stdout: '"name": "x"\n' } : undefined),
+		]);
 		const deployer = createDeployer({
 			appName: 'demo',
 			clock: () => 0,
@@ -189,17 +205,9 @@ describe('defaultBunPipeline', () => {
 	});
 
 	test('build step runs when package.json has a build script', async () => {
-		const handlers: ExecHandler[] = [
-			() => ({}), // ensureRoot
-			() => ({}), // prepare
-			() => ({}), // install
-			() => ({ stdout: '"build": "tsc"\n' }), // grep
-			() => ({}), // bun run build
-			() => ({}), // link
-			() => ({}), // restart stop
-			() => ({}), // restart start
-		];
-		const { execLog, target } = makeMockTarget(handlers);
+		const { execLog, target } = makePatternTarget([
+			(cmd) => (cmd.startsWith('grep -E') ? { stdout: '"build": "tsc"\n' } : undefined),
+		]);
 		const deployer = createDeployer({
 			appName: 'demo',
 			clock: () => 0,

@@ -32,10 +32,13 @@ export { bareManager, systemdManager } from './processManagers';
 export type {
 	DeployContext,
 	DeployHooks,
+	DeployOptions,
 	DeployResult,
 	DeployStep,
 	Deployer,
 	DeployerOptions,
+	ReleaseAnnotations,
+	ReleaseRecord,
 	Source,
 	VerifySpec,
 } from './deployer';
