@@ -229,6 +229,64 @@ success).
 The same `DnsProvider` contract applies to other providers — Route
 53 / DigitalOcean DNS / etc. follow next.
 
+## `@absolutejs/deploy/tls` — Let's Encrypt automation (0.5.0)
+
+The last step. After provisioning a Target and pointing DNS at it,
+`issueCertificate(...)` drives the full ACME-DNS-01 flow against
+Let's Encrypt: account registration, new order, DNS-01 challenge
+via the same `DnsProvider` you used for DNS, polling, CSR
+finalize, cert download. Then `installCertificateOnTarget(...)`
+uploads the PEM files to the box.
+
+Zero third-party ACME / JOSE deps — RFC 8555 implemented directly
+against Bun's `crypto.subtle`. The audit surface stays in this
+repo.
+
+```ts
+import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+import { cloudflareProvider } from '@absolutejs/deploy/cloudflare';
+import { ensureDnsForTarget } from '@absolutejs/deploy/dns';
+import {
+  issueCertificate,
+  installCertificateOnTarget,
+  LETSENCRYPT_PRODUCTION,
+} from '@absolutejs/deploy/tls';
+
+const target = await hetznerTarget({ /* … */ });
+const dns = cloudflareProvider({
+  token: process.env.CLOUDFLARE_TOKEN!,
+  zoneId: process.env.CLOUDFLARE_ZONE_ID!,
+});
+
+// 1. Point DNS at the box.
+await ensureDnsForTarget(dns, { name: 'api.example.com', target, ttl: 60 });
+
+// 2. Issue a cert via DNS-01.
+const cert = await issueCertificate({
+  domains: ['api.example.com'],
+  dnsProvider: dns,
+  email: 'ops@example.com',
+  directoryUrl: LETSENCRYPT_PRODUCTION,
+  onLog: (line) => console.log(line),
+});
+
+// 3. Install on the box.
+await installCertificateOnTarget(target, cert, {
+  reload: 'systemctl reload nginx',
+});
+```
+
+`generateAccountKey()` / `exportAccount()` / `importAccount()`
+round-trip the ECDSA P-256 keypair + `kid` so cert renewals reuse
+the same account (avoids Let's Encrypt's account-creation rate
+limit). Persist the JSON; pass `account` back to subsequent
+`issueCertificate` calls.
+
+`installCertificateOnTarget`'s defaults:
+`/etc/ssl/<domain>/fullchain.pem` + `/etc/ssl/<domain>/privkey.pem`,
+mode `600`. Override `certPath` / `keyPath` / `mode` / `owner` /
+`reload` as needed.
+
 ## DigitalOcean Droplet — first deploy (manual)
 
 Assuming a fresh Ubuntu/Debian Droplet:
@@ -248,11 +306,11 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.4.0 does NOT include
+## What v0.5.0 does NOT include
 
-- TLS certificate automation. ACME / Let's Encrypt is a separate concern — coming next.
 - Cloud-provider compute targets beyond DigitalOcean + Hetzner. Linode / Vultr / Fly Machines follow the same shape and are next on the list.
 - DNS providers beyond Cloudflare. Route 53 / DigitalOcean DNS / Hetzner DNS slot into the same `DnsProvider` contract.
+- Cert renewal scheduling — `issueCertificate` is one-shot; wire it to a cron / scheduled-function and pass the persisted account JSON back in to renew. (Convention: renew at 30 days remaining.)
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.

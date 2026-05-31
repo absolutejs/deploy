@@ -1,5 +1,61 @@
 # @absolutejs/deploy changelog
 
+## 0.5.0 — 2026-05-31
+
+TLS / Let's Encrypt automation. After provisioning a Target and
+pointing DNS at it, the last manual step ("get a cert for this
+hostname") is now in-tree. Zero third-party ACME or JOSE
+dependencies — RFC 8555 implemented directly against Bun's
+`crypto.subtle`.
+
+### Added — `@absolutejs/deploy/tls` subpath
+
+- **`issueCertificate({ domains, dnsProvider, email })`** — drives the
+  full ACME-DNS-01 flow against Let's Encrypt (or any RFC 8555
+  compatible CA). Account registration, new order, DNS-01 challenge
+  via `DnsProvider.upsert` (Cloudflare today, others slot in),
+  authorization polling, CSR finalize with ECDSA P-256 keypair,
+  certificate download. Returns
+  `{ certificatePem, privateKeyPem, account, domains }`.
+- **`installCertificateOnTarget(target, cert, options?)`** — uploads
+  PEM cert + private key to a cloud `Target` via the existing
+  `exec`/`upload` interface; optional `chmod`, `chown`, and `reload`
+  command. Default paths: `/etc/ssl/<domain>/{fullchain,privkey}.pem`,
+  mode `600`.
+- **Account reuse** — `generateAccountKey() / exportAccount() /
+  importAccount()` round-trip the ECDSA P-256 keypair + `kid` so
+  cert renewals reuse the same account (cheaper, avoids Let's
+  Encrypt's account-creation rate limit).
+- **Constants** — `LETSENCRYPT_PRODUCTION` and `LETSENCRYPT_STAGING`
+  for the directory URL.
+- **`AcmeError`** — carries `{ status, body }` so callers can switch
+  on rate-limit / malformed-order error types.
+
+### Why we own the ACME client
+
+Letting a third-party npm pkg drive the deploy's TLS flow means
+trusting its JOSE implementation, account-key handling, and
+serialization. Owning a ~500-line implementation lives in this
+repo's audit surface. RFC 8555 is stable, Bun's `crypto.subtle`
+covers JWS (ES256) and DER-encoded CSR signing, so the dep cost
+of "use the standard ACME client" buys very little.
+
+### Build
+
+- New `src/tls.ts` bundle entry + `./tls` subpath in `package.json`
+  exports.
+
+### Tests
+
+13 new tests: mock ACME server walking the protocol through
+account → order → authorization → challenge → finalize → certificate
+download; mock DnsProvider verifies the DNS-01 TXT record gets
+written + cleaned up; account export/import round-trip with a
+sign/verify sanity check; `installCertificateOnTarget` exec
+ordering and override paths.
+
+Test count: 84 → 97.
+
 ## 0.4.0 — 2026-05-31
 
 DNS automation. After provisioning a Target you still had to log into
