@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
@@ -26,7 +26,7 @@
     "release"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/digitalocean.ts src/hetzner.ts --outdir dist --sourcemap --target=bun && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/digitalocean.ts src/hetzner.ts src/dns.ts src/cloudflare.ts --outdir dist --sourcemap --target=bun && tsc --project tsconfig.build.json",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -56,6 +56,16 @@
       "types": "./dist/hetzner.d.ts",
       "import": "./dist/hetzner.js",
       "default": "./dist/hetzner.js"
+    },
+    "./dns": {
+      "types": "./dist/dns.d.ts",
+      "import": "./dist/dns.js",
+      "default": "./dist/dns.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "import": "./dist/cloudflare.js",
+      "default": "./dist/cloudflare.js"
     }
   },
   "files": ["dist", "README.md"]

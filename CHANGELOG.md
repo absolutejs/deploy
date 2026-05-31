@@ -1,5 +1,55 @@
 # @absolutejs/deploy changelog
 
+## 0.4.0 — 2026-05-31
+
+DNS automation. After provisioning a Target you still had to log into
+Cloudflare and copy-paste the IP into a new A record; this release
+closes that loop.
+
+### Added — `@absolutejs/deploy/dns` shared interface
+
+- **`DnsProvider`** contract — zone-scoped DNS operations
+  (`list / find / create / update / delete / upsert`). Provider-
+  specific adapters implement this; the deploy pipeline composes
+  them with cloud Targets.
+- **`DnsRecord` / `DnsRecordSpec` / `DnsRecordType`** — record types
+  (`A` / `AAAA` / `CNAME` / `TXT` / `MX`) plus the desired-state
+  shape used by `upsert`.
+- **`ensureDnsForTarget(provider, { name, target, ttl?, proxied?,
+  comment? })`** — the canonical "point this hostname at this freshly-
+  provisioned IPv4" entry. Idempotent — calls `provider.upsert()`.
+
+### Added — `@absolutejs/deploy/cloudflare` adapter
+
+- **`cloudflareProvider({ token | client, zoneId, zoneName? })`** —
+  returns a `DnsProvider` bound to one Cloudflare zone. Uses API
+  tokens (`Zone:DNS:Edit` scope); global keys intentionally not
+  supported.
+- **`upsert` semantics** — finds by exact (name, type); skips the API
+  call entirely when the record already matches `spec` (no churn on
+  `content`/`ttl`/`proxied`/`comment` agreement); otherwise create
+  or update.
+- **Exact-name guarantees** — Cloudflare's `name=` filter is sometimes
+  substring-loose; the adapter pins matches to exact name (tolerating
+  a trailing dot on the API's response).
+- **Drift detection** — multiple records sharing the same (name, type)
+  throw with a clear "resolve manually" message instead of silently
+  picking one.
+- **`createCloudflareClient(token, options?)`** — fetch-backed default
+  client. Throws `CloudflareError` with `{ status, body }` on non-2xx.
+- **404 on delete = idempotent success** (matches the DO + Hetzner
+  adapters).
+
+### Build
+
+- New `dns.ts` + `cloudflare.ts` bundle entries; new `./dns` and
+  `./cloudflare` subpaths in `package.json` exports.
+
+### Tests
+
+19 new tests across the Cloudflare adapter + the `ensureDnsForTarget`
+composer + the fetch-backed client. Test count 65 → 84.
+
 ## 0.3.1 — 2026-05-31
 
 Internal refactor — no behavior or public API change. Extracted the

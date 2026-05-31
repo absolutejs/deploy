@@ -188,6 +188,47 @@ happen. Admin helpers: `listHetznerServers({ token, labelSelector?
 })` (Hetzner's `'env=prod'` / `'env in (prod,staging)'` syntax);
 `destroyHetznerServer({ token, id })` (404 idempotent success).
 
+## `@absolutejs/deploy/cloudflare` — DNS automation (0.4.0)
+
+After provisioning a Target, point a hostname at its IP without
+leaving the deploy script. `cloudflareProvider({ token, zoneId })`
+implements the shared `DnsProvider` contract from
+`@absolutejs/deploy/dns`.
+
+```ts
+import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+import { cloudflareProvider } from '@absolutejs/deploy/cloudflare';
+import { ensureDnsForTarget } from '@absolutejs/deploy/dns';
+
+const target = await hetznerTarget({ /* … */ });
+const dns = cloudflareProvider({
+  token: process.env.CLOUDFLARE_TOKEN!,
+  zoneId: process.env.CLOUDFLARE_ZONE_ID!,
+});
+
+// Idempotent — create or update so the A record points at target.ipv4.
+await ensureDnsForTarget(dns, {
+  name: 'api.example.com',
+  target,
+  ttl: 60,
+  proxied: false,
+});
+```
+
+`upsert` is the canonical entry: finds by exact (name, type); skips
+the API call entirely when the existing record already matches the
+spec (no churn on TTL / proxied / comment agreement). Multiple
+records sharing the same (name, type) throw with a "resolve
+manually" message instead of silently picking one.
+
+Auth uses Cloudflare API tokens with `Zone:DNS:Edit` scope (global
+keys not supported). Pair with `provider.list({ name?, type? })`
+for inventory, `provider.delete(id)` for tear-down (404 idempotent
+success).
+
+The same `DnsProvider` contract applies to other providers — Route
+53 / DigitalOcean DNS / etc. follow next.
+
 ## DigitalOcean Droplet — first deploy (manual)
 
 Assuming a fresh Ubuntu/Debian Droplet:
@@ -207,9 +248,11 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.3.0 does NOT include
+## What v0.4.0 does NOT include
 
-- Provider-specific HTTP-API adapters beyond DigitalOcean + Hetzner (Cloudflare Workers, Fly Machines, AWS Fargate, GCP Cloud Run). Linode / Vultr follow the same shape and are next on the list.
+- TLS certificate automation. ACME / Let's Encrypt is a separate concern — coming next.
+- Cloud-provider compute targets beyond DigitalOcean + Hetzner. Linode / Vultr / Fly Machines follow the same shape and are next on the list.
+- DNS providers beyond Cloudflare. Route 53 / DigitalOcean DNS / Hetzner DNS slot into the same `DnsProvider` contract.
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.
