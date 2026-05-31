@@ -23,7 +23,7 @@
  */
 
 import type { Target } from './targets';
-import { sshTarget } from './targets';
+import { createCloudTarget, type CloudTargetHooks } from './cloudTarget';
 
 const HETZNER_API_BASE = 'https://api.hetzner.cloud/v1';
 
@@ -194,41 +194,6 @@ const resolveClient = (
 const publicIpv4 = (server: HetznerServer): string | undefined =>
 	server.public_net.ipv4?.ip;
 
-const defaultSleep = (ms: number): Promise<void> =>
-	new Promise((resolve) => setTimeout(resolve, ms));
-
-const defaultProbeSsh = async (host: string, port: number): Promise<boolean> => {
-	const PROBE_TIMEOUT_MS = 2_000;
-	return new Promise<boolean>((resolve) => {
-		let settled = false;
-		const settle = (value: boolean) => {
-			if (settled) return;
-			settled = true;
-			resolve(value);
-		};
-		const timer = setTimeout(() => settle(false), PROBE_TIMEOUT_MS);
-		Bun.connect({
-			hostname: host,
-			port,
-			socket: {
-				data: () => {},
-				error: () => {
-					clearTimeout(timer);
-					settle(false);
-				},
-				open: (socket) => {
-					clearTimeout(timer);
-					socket.end();
-					settle(true);
-				}
-			}
-		}).catch(() => {
-			clearTimeout(timer);
-			settle(false);
-		});
-	});
-};
-
 /**
  * Find a server by name. Returns undefined if absent. Hetzner
  * enforces unique server names per project, so duplicates aren't
@@ -296,105 +261,85 @@ export const hetznerTarget = async (
 	options: HetznerTargetOptions
 ): Promise<HetznerTarget> => {
 	const client = resolveClient(options);
-	const log = options.onLog ?? (() => {});
-	const probeSsh = options.probeSsh ?? defaultProbeSsh;
-	const sleep = options.sleep ?? defaultSleep;
-	const now = options.now ?? Date.now;
-	const pollMs = options.pollIntervalMs ?? 5_000;
-	const provisionTimeout = options.provisionTimeoutMs ?? 5 * 60_000;
-	const sshTimeout = options.sshReadinessTimeoutMs ?? 2 * 60_000;
-	const port = options.port ?? 22;
+	const publicIpv4Enabled = options.disablePublicIpv4 !== true;
+	const publicIpv6Enabled = options.disablePublicIpv6 !== true;
 
-	const existing = await findHetznerServer(client, options.name);
-	let current: HetznerServer;
-	if (existing === undefined) {
-		log(`[hetzner] creating server "${options.name}" in ${options.location}`);
-		const publicIpv4Enabled = options.disablePublicIpv4 !== true;
-		const publicIpv6Enabled = options.disablePublicIpv6 !== true;
-		const created = await client.request<{ server: HetznerServer }>(
-			'POST',
-			'/servers',
-			{
-				name: options.name,
-				location: options.location,
-				server_type: options.serverType,
-				image: options.image,
-				ssh_keys: [...options.sshKeys],
-				start_after_create: true,
-				public_net: {
-					enable_ipv4: publicIpv4Enabled,
-					enable_ipv6: publicIpv6Enabled
-				},
-				...(options.labels !== undefined ? { labels: options.labels } : {}),
-				...(options.userData !== undefined
-					? { user_data: options.userData }
-					: {}),
-				...(options.networkId !== undefined
-					? { networks: [options.networkId] }
-					: {})
-			}
-		);
-		current = created.server;
-	} else {
-		log(
-			`[hetzner] reusing server "${options.name}" (id ${existing.id}, status ${existing.status})`
-		);
-		current = existing;
-	}
-
-	// Wait for status=running AND public IPv4 assigned.
-	const provisionStart = now();
-	let ipv4 = publicIpv4(current);
-	while (current.status !== 'running' || ipv4 === undefined) {
-		if (now() - provisionStart > provisionTimeout) {
-			throw new Error(
-				`[deploy/hetzner] provision timeout after ${provisionTimeout}ms — server ${current.id} status "${current.status}", ipv4 ${ipv4 ?? '(unassigned)'}`
+	const hooks: CloudTargetHooks<HetznerServer> = {
+		create: async () => {
+			const created = await client.request<{ server: HetznerServer }>(
+				'POST',
+				'/servers',
+				{
+					name: options.name,
+					location: options.location,
+					server_type: options.serverType,
+					image: options.image,
+					ssh_keys: [...options.sshKeys],
+					start_after_create: true,
+					public_net: {
+						enable_ipv4: publicIpv4Enabled,
+						enable_ipv6: publicIpv6Enabled
+					},
+					...(options.labels !== undefined
+						? { labels: options.labels }
+						: {}),
+					...(options.userData !== undefined
+						? { user_data: options.userData }
+						: {}),
+					...(options.networkId !== undefined
+						? { networks: [options.networkId] }
+						: {})
+				}
 			);
-		}
-		await sleep(pollMs);
-		const refreshed: { server: HetznerServer } = await client.request(
-			'GET',
-			`/servers/${current.id}`
-		);
-		current = refreshed.server;
-		ipv4 = publicIpv4(current);
-		log(`[hetzner] poll: status=${current.status} ipv4=${ipv4 ?? '(none yet)'}`);
-	}
-	log(`[hetzner] server running at ${ipv4}`);
-
-	// Wait for SSH readiness.
-	const sshStart = now();
-	while (!(await probeSsh(ipv4, port))) {
-		if (now() - sshStart > sshTimeout) {
-			throw new Error(
-				`[deploy/hetzner] SSH readiness timeout after ${sshTimeout}ms — ${ipv4}:${port} did not accept connections`
+			return created.server;
+		},
+		destroy: (id) => destroyHetznerServer({ client, id }),
+		fetch: async (id) => {
+			const refreshed: { server: HetznerServer } = await client.request(
+				'GET',
+				`/servers/${id}`
 			);
-		}
-		await sleep(pollMs);
-		log(`[hetzner] waiting on ssh ${ipv4}:${port}`);
-	}
-	log(`[hetzner] ssh ready at ${ipv4}:${port}`);
+			return refreshed.server;
+		},
+		findByName: (name) => findHetznerServer(client, name),
+		getId: (server) => server.id,
+		getIpv4: publicIpv4,
+		getStatus: (server) => server.status,
+		isReady: (server) => server.status === 'running'
+	};
 
-	const ssh = sshTarget({
-		host: ipv4,
+	const result = await createCloudTarget(hooks, {
+		describeTarget: (sshDescription) =>
+			`hetzner server "${options.name}" (${sshDescription})`,
+		entityWord: 'server',
+		logPrefix: '[hetzner]',
+		name: options.name,
+		region: options.location,
 		...(options.user !== undefined ? { user: options.user } : {}),
 		...(options.identity !== undefined ? { identity: options.identity } : {}),
-		...(options.port !== undefined ? { port: options.port } : {})
+		...(options.port !== undefined ? { port: options.port } : {}),
+		...(options.provisionTimeoutMs !== undefined
+			? { provisionTimeoutMs: options.provisionTimeoutMs }
+			: {}),
+		...(options.sshReadinessTimeoutMs !== undefined
+			? { sshReadinessTimeoutMs: options.sshReadinessTimeoutMs }
+			: {}),
+		...(options.pollIntervalMs !== undefined
+			? { pollIntervalMs: options.pollIntervalMs }
+			: {}),
+		...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
+		...(options.probeSsh !== undefined ? { probeSsh: options.probeSsh } : {}),
+		...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
+		...(options.now !== undefined ? { now: options.now } : {})
 	});
 
-	const serverId = current.id;
-	const resolvedIpv4 = ipv4;
-
 	return {
-		description: `hetzner server "${options.name}" (${ssh.description})`,
-		destroy: () =>
-			destroyHetznerServer({ client, id: serverId }).then(() => {
-				log(`[hetzner] destroyed server ${serverId}`);
-			}),
-		exec: ssh.exec,
-		ipv4: resolvedIpv4,
-		serverId,
-		upload: ssh.upload,
-		...(ssh.close !== undefined ? { close: ssh.close } : {})
+		description: result.description,
+		destroy: result.destroy,
+		exec: result.exec,
+		ipv4: result.ipv4,
+		serverId: result.id,
+		upload: result.upload,
+		...(result.close !== undefined ? { close: result.close } : {})
 	};
 };

@@ -22,7 +22,7 @@
  */
 
 import type { Target } from './targets';
-import { sshTarget } from './targets';
+import { createCloudTarget, type CloudTargetHooks } from './cloudTarget';
 
 const DO_API_BASE = 'https://api.digitalocean.com/v2';
 
@@ -188,41 +188,6 @@ const resolveClient = (
 const publicIpv4 = (droplet: DigitalOceanDroplet): string | undefined =>
 	droplet.networks.v4.find((net) => net.type === 'public')?.ip_address;
 
-const defaultSleep = (ms: number): Promise<void> =>
-	new Promise((resolve) => setTimeout(resolve, ms));
-
-const defaultProbeSsh = async (host: string, port: number): Promise<boolean> => {
-	const PROBE_TIMEOUT_MS = 2_000;
-	return new Promise<boolean>((resolve) => {
-		let settled = false;
-		const settle = (value: boolean) => {
-			if (settled) return;
-			settled = true;
-			resolve(value);
-		};
-		const timer = setTimeout(() => settle(false), PROBE_TIMEOUT_MS);
-		Bun.connect({
-			hostname: host,
-			port,
-			socket: {
-				data: () => {},
-				error: () => {
-					clearTimeout(timer);
-					settle(false);
-				},
-				open: (socket) => {
-					clearTimeout(timer);
-					socket.end();
-					settle(true);
-				}
-			}
-		}).catch(() => {
-			clearTimeout(timer);
-			settle(false);
-		});
-	});
-};
-
 /**
  * Find a droplet by name. Returns undefined if absent.
  * Throws if more than one droplet shares the name (drifted state).
@@ -291,100 +256,80 @@ export const digitalOceanTarget = async (
 	options: DigitalOceanTargetOptions
 ): Promise<DigitalOceanTarget> => {
 	const client = resolveClient(options);
-	const log = options.onLog ?? (() => {});
-	const probeSsh = options.probeSsh ?? defaultProbeSsh;
-	const sleep = options.sleep ?? defaultSleep;
-	const now = options.now ?? Date.now;
-	const pollMs = options.pollIntervalMs ?? 5_000;
-	const provisionTimeout = options.provisionTimeoutMs ?? 5 * 60_000;
-	const sshTimeout = options.sshReadinessTimeoutMs ?? 2 * 60_000;
-	const port = options.port ?? 22;
 
-	const existing = await findDigitalOceanDroplet(client, options.name);
-	let current: DigitalOceanDroplet;
-	if (existing === undefined) {
-		log(`[do] creating droplet "${options.name}" in ${options.region}`);
-		const created = await client.request<{ droplet: DigitalOceanDroplet }>(
-			'POST',
-			'/droplets',
-			{
-				name: options.name,
-				region: options.region,
-				size: options.size,
-				image: options.image,
-				ssh_keys: [...options.sshKeys],
-				...(options.tags !== undefined ? { tags: [...options.tags] } : {}),
-				...(options.userData !== undefined
-					? { user_data: options.userData }
-					: {}),
-				...(options.vpcUuid !== undefined
-					? { vpc_uuid: options.vpcUuid }
-					: {}),
-				...(options.ipv6 === true ? { ipv6: true } : {}),
-				...(options.monitoring === true ? { monitoring: true } : {})
-			}
-		);
-		current = created.droplet;
-	} else {
-		log(
-			`[do] reusing droplet "${options.name}" (id ${existing.id}, status ${existing.status})`
-		);
-		current = existing;
-	}
-
-	// Wait for status=active AND public IPv4 assigned.
-	const provisionStart = now();
-	let ipv4 = publicIpv4(current);
-	while (current.status !== 'active' || ipv4 === undefined) {
-		if (now() - provisionStart > provisionTimeout) {
-			throw new Error(
-				`[deploy/digitalocean] provision timeout after ${provisionTimeout}ms — droplet ${current.id} status "${current.status}", ipv4 ${ipv4 ?? '(unassigned)'}`
+	const hooks: CloudTargetHooks<DigitalOceanDroplet> = {
+		create: async () => {
+			const created = await client.request<{ droplet: DigitalOceanDroplet }>(
+				'POST',
+				'/droplets',
+				{
+					name: options.name,
+					region: options.region,
+					size: options.size,
+					image: options.image,
+					ssh_keys: [...options.sshKeys],
+					...(options.tags !== undefined
+						? { tags: [...options.tags] }
+						: {}),
+					...(options.userData !== undefined
+						? { user_data: options.userData }
+						: {}),
+					...(options.vpcUuid !== undefined
+						? { vpc_uuid: options.vpcUuid }
+						: {}),
+					...(options.ipv6 === true ? { ipv6: true } : {}),
+					...(options.monitoring === true ? { monitoring: true } : {})
+				}
 			);
-		}
-		await sleep(pollMs);
-		const refreshed: { droplet: DigitalOceanDroplet } = await client.request(
-			'GET',
-			`/droplets/${current.id}`
-		);
-		current = refreshed.droplet;
-		ipv4 = publicIpv4(current);
-		log(`[do] poll: status=${current.status} ipv4=${ipv4 ?? '(none yet)'}`);
-	}
-	log(`[do] droplet active at ${ipv4}`);
-
-	// Wait for SSH readiness.
-	const sshStart = now();
-	while (!(await probeSsh(ipv4, port))) {
-		if (now() - sshStart > sshTimeout) {
-			throw new Error(
-				`[deploy/digitalocean] SSH readiness timeout after ${sshTimeout}ms — ${ipv4}:${port} did not accept connections`
+			return created.droplet;
+		},
+		destroy: (id) => destroyDigitalOceanDroplet({ client, id }),
+		fetch: async (id) => {
+			const refreshed: { droplet: DigitalOceanDroplet } = await client.request(
+				'GET',
+				`/droplets/${id}`
 			);
-		}
-		await sleep(pollMs);
-		log(`[do] waiting on ssh ${ipv4}:${port}`);
-	}
-	log(`[do] ssh ready at ${ipv4}:${port}`);
+			return refreshed.droplet;
+		},
+		findByName: (name) => findDigitalOceanDroplet(client, name),
+		getId: (droplet) => droplet.id,
+		getIpv4: publicIpv4,
+		getStatus: (droplet) => droplet.status,
+		isReady: (droplet) => droplet.status === 'active'
+	};
 
-	const ssh = sshTarget({
-		host: ipv4,
+	const result = await createCloudTarget(hooks, {
+		describeTarget: (sshDescription) =>
+			`digitalocean droplet "${options.name}" (${sshDescription})`,
+		entityWord: 'droplet',
+		logPrefix: '[do]',
+		name: options.name,
+		region: options.region,
 		...(options.user !== undefined ? { user: options.user } : {}),
 		...(options.identity !== undefined ? { identity: options.identity } : {}),
-		...(options.port !== undefined ? { port: options.port } : {})
+		...(options.port !== undefined ? { port: options.port } : {}),
+		...(options.provisionTimeoutMs !== undefined
+			? { provisionTimeoutMs: options.provisionTimeoutMs }
+			: {}),
+		...(options.sshReadinessTimeoutMs !== undefined
+			? { sshReadinessTimeoutMs: options.sshReadinessTimeoutMs }
+			: {}),
+		...(options.pollIntervalMs !== undefined
+			? { pollIntervalMs: options.pollIntervalMs }
+			: {}),
+		...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
+		...(options.probeSsh !== undefined ? { probeSsh: options.probeSsh } : {}),
+		...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
+		...(options.now !== undefined ? { now: options.now } : {})
 	});
 
-	const dropletId = current.id;
-	const resolvedIpv4 = ipv4;
-
 	return {
-		description: `digitalocean droplet "${options.name}" (${ssh.description})`,
-		dropletId,
-		ipv4: resolvedIpv4,
-		destroy: () =>
-			destroyDigitalOceanDroplet({ client, id: dropletId }).then(() => {
-				log(`[do] destroyed droplet ${dropletId}`);
-			}),
-		exec: ssh.exec,
-		upload: ssh.upload,
-		...(ssh.close !== undefined ? { close: ssh.close } : {})
+		description: result.description,
+		destroy: result.destroy,
+		dropletId: result.id,
+		exec: result.exec,
+		ipv4: result.ipv4,
+		upload: result.upload,
+		...(result.close !== undefined ? { close: result.close } : {})
 	};
 };

@@ -1,5 +1,18 @@
 # @absolutejs/deploy changelog
 
+## 0.3.1 — 2026-05-31
+
+Internal refactor — no behavior or public API change. Extracted the
+universal "provision-or-reuse + wait-for-ready + wait-for-SSH +
+wrap-sshTarget" machinery into `src/cloudTarget.ts` so future
+provider adapters (Linode / Vultr / Fly / etc.) are ~80 lines of
+provider-specific glue around `createCloudTarget(hooks, options)`.
+
+Internal-only — `createCloudTarget` is not exported from the
+package, so the public API is unchanged. Existing `digitalOceanTarget`
+and `hetznerTarget` source files dropped ~80 and ~100 lines
+respectively. All 65 tests still green.
+
 ## 0.3.0 — 2026-05-31
 
 Second cloud-provider adapter — sibling to the DO adapter shipped
