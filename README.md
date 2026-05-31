@@ -287,6 +287,83 @@ limit). Persist the JSON; pass `account` back to subsequent
 mode `600`. Override `certPath` / `keyPath` / `mode` / `owner` /
 `reload` as needed.
 
+## `@absolutejs/deploy/env` — env-file sync + secret propagation (0.7.0)
+
+The "universal place to rotate a key across the myriad of services"
+loop. Composes with `@absolutejs/secrets`: that library handles the
+in-process side (resolve, rotate, redact, in-process listeners);
+this module handles the deploy-side (push values to remote env
+files, atomic swap, conditional service reload).
+
+```ts
+import { createSecretBroker, inMemoryAdapter } from '@absolutejs/secrets';
+import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+import {
+  syncSecretsToDeployments,
+  deploymentsUsing,
+  type EnvDeployment,
+} from '@absolutejs/deploy/env';
+
+// One source of truth — the SecretBroker. Swap in whatever adapter
+// (env, file, vault, etc.) makes sense for your team.
+const broker = createSecretBroker({
+  adapter: inMemoryAdapter({
+    initial: {
+      DATABASE_URL: 'postgres://prod-db',
+      STRIPE_KEY: 'sk_live_old',
+    },
+  }),
+});
+
+// Each deployed service is one EnvDeployment.
+const api = await hetznerTarget({ name: 'api-1', /* … */ });
+const worker = await hetznerTarget({ name: 'worker-1', /* … */ });
+
+const deployments: EnvDeployment[] = [
+  {
+    target: api,
+    remotePath: '/etc/api.env',
+    secretNames: ['STRIPE_KEY', 'DATABASE_URL'],
+    extras: { NODE_ENV: 'production', PORT: '3000' },
+    reload: 'systemctl reload api',
+  },
+  {
+    target: worker,
+    remotePath: '/etc/worker.env',
+    secretNames: ['DATABASE_URL'],
+    extras: { NODE_ENV: 'production' },
+    reload: 'systemctl restart worker',
+  },
+];
+
+// First-time push (and every subsequent re-sync — idempotent).
+await syncSecretsToDeployments(broker, deployments);
+
+// Rotate STRIPE_KEY everywhere it's used:
+await broker.rotate('STRIPE_KEY');
+await syncSecretsToDeployments(
+  broker,
+  deploymentsUsing('STRIPE_KEY', deployments)
+);
+```
+
+`broker.rotate()` updates the broker's underlying store + fires the
+existing `onRotate` listeners (long-lived DB clients swap creds in
+place). `syncSecretsToDeployments` propagates to every deployed box
+that uses the secret, atomically rewrites the env file, runs the
+reload command only if the diff was non-empty.
+
+Format: standard `KEY=value` per line, sorted alphabetically (stable
+diffs), values double-quoted when needed. systemd reads it via
+`EnvironmentFile=`; Docker via `--env-file`; most shell start
+scripts source it. The serializer rejects newlines in values + keys
+that don't match `[A-Z_][A-Z0-9_]*`.
+
+Best-effort fan-out: one broken target doesn't stop the rest. Each
+result carries either `result: EnvSyncResult` or `error: Error`.
+The operator inspects the array, fixes the broken target, re-runs —
+re-runs are idempotent.
+
 ## Renewals — `renewCertificate` (0.6.0)
 
 `issueCertificate` is one-shot; `renewCertificate` is the conditional

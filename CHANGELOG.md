@@ -1,5 +1,77 @@
 # @absolutejs/deploy changelog
 
+## 0.7.0 — 2026-05-31
+
+Environment-variable propagation. Closes the "I rotate STRIPE_KEY in
+my broker — now what?" question that `@absolutejs/secrets` left
+open. Composes with `@absolutejs/secrets` via a narrow
+`SecretSource` interface — neither library imports the other.
+
+### Added — `@absolutejs/deploy/env` subpath
+
+- **`syncEnvToTarget(deployment, values)`** — push a
+  `Record<string, string>` to a remote env file (default
+  `/etc/<app>.env`). Atomic write (temp file + `mv`), diffs against
+  the existing file, chmod (default 600) + chown, optional reload
+  command. Skips write + reload when nothing changed — bouncing a
+  service for an identical file is the wrong default.
+- **`syncSecretsToDeployments(source, deployments)`** — fan-out.
+  Resolves each deployment's `secretNames` via the `SecretSource`,
+  merges with `extras` (non-secret env), pushes to each target.
+  Best-effort across the fan-out: a per-target failure is captured
+  in the result, doesn't stop the rest.
+- **`deploymentsUsing(name, deployments)`** — filter helper for
+  "only propagate to the deployments that use this secret."
+- **`SecretSource`** narrow interface (`{ resolve(name) → ... }`).
+  `@absolutejs/secrets`' `SecretBroker` satisfies it structurally;
+  any custom store works too.
+- **`serializeEnvFile` / `parseEnvFile`** standalone helpers. The
+  serializer validates keys against `[A-Z_][A-Z0-9_]*` and rejects
+  newlines in values (env files can't represent them).
+- **Format guarantees**: alphabetically-sorted output for stable
+  diffs; double-quoted values when shell special chars appear; the
+  parser ignores `#` comments and blank lines, throws on malformed
+  lines (the deploy primitive owns the file — unknown content is
+  loud, not silent).
+
+### Rotation propagation
+
+The rotation flow is now one composed call:
+
+```ts
+await broker.rotate('STRIPE_KEY');                           // @absolutejs/secrets
+await syncSecretsToDeployments(broker, deployments);         // @absolutejs/deploy/env
+```
+
+Or, when scoped to only the consumers of one key:
+
+```ts
+await broker.rotate('STRIPE_KEY');
+await syncSecretsToDeployments(
+  broker,
+  deploymentsUsing('STRIPE_KEY', deployments)
+);
+```
+
+`broker.rotate()` fires the existing `onRotate` listeners (long-
+lived DB clients swap creds in-process). `syncSecretsToDeployments`
+propagates to every deployed box that uses the secret. Together
+they make the "rotate everywhere" call exactly the loop the
+operator wants.
+
+### Tests
+
+19 new tests (`tests/env.test.ts`): serialize/parse round-trip for
+tricky values; rejects newlines + invalid keys; ignores comments +
+blank lines; first push creates the file; no-op when unchanged
+(skips reload too); detects added/removed/changed/unchanged keys;
+atomic temp-file + `mv` pattern; extras merge with secrets;
+extras/secret collision throws; custom mode + owner; fan-out
+pushes to multiple targets; rotation re-sync picks up the new
+value; best-effort fan-out captures per-target failures.
+
+Test count: 137 → 156.
+
 ## 0.6.0 — 2026-05-31
 
 Cert-renewal scheduling. The 0.5.0 `issueCertificate` was one-shot;
