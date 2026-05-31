@@ -1,5 +1,50 @@
 # @absolutejs/deploy changelog
 
+## 0.2.0 — 2026-05-31
+
+Cloud-provider Target adapter. The first piece of "manage hosting from
+code" — stop the click-through-DO-dashboard / copy-IP / paste-into-config
+loop that gates every fresh deploy.
+
+### Added — `@absolutejs/deploy/digitalocean` subpath
+
+- **`digitalOceanTarget(options)`** — provision-or-reuse a DigitalOcean
+  droplet by name, wait for `status === 'active'` + IPv4, wait for SSH
+  readiness, return a `Target` that wraps `sshTarget`. Idempotent: same
+  `name` → same droplet, no duplicates. Returns `{ ...Target,
+  dropletId, ipv4, destroy() }`.
+- **`createDigitalOceanClient(token, options?)`** — fetch-backed default
+  client against `api.digitalocean.com/v2`. Authorization via bearer
+  token; throws `DigitalOceanError` (with `status` + parsed body) on
+  non-2xx. Pass a custom `fetch` for retries / observability / testing.
+- **`findDigitalOceanDroplet(client, name)`** — exact-name lookup;
+  throws on ambiguous duplicates (drifted state).
+- **`listDigitalOceanDroplets({ token?|client?, tag? })`** — list all
+  droplets or filter by tag.
+- **`destroyDigitalOceanDroplet({ token?|client?, id })`** — DELETE; 404
+  is treated as idempotent success.
+- **Narrow `DigitalOceanClientLike` interface** — keep the DO SDK out
+  as a hard dep. The fetch-backed default ships with the package; any
+  shape satisfying `request(method, path, body?)` works.
+- **Injection points for tests** — `probeSsh`, `sleep`, `now` are all
+  overridable so tests skip real network IO. Defaults: `Bun.connect`
+  TCP probe with 2 s per-attempt timeout; `setTimeout`; `Date.now`.
+
+### Build
+
+- Added `src/digitalocean.ts` as a second bundle entry, producing
+  `dist/digitalocean.{js,d.ts,js.map}`. New `./digitalocean` subpath
+  in `package.json` exports.
+
+### Tests
+
+17 new tests against a mock client + injectable probe — provision,
+reuse, polling until active, provision timeout, SSH readiness
+backoff + timeout, destroy, idempotent 404, missing-credentials
+guard, exact-name filtering, ambiguous-duplicate error, list-by-tag,
+fetch-client authorization, fetch-client error mapping. Test count
+29 → 46.
+
 ## 0.1.0 — 2026-05-29
 
 Substrate-deepening pass. Backwards-compatible — `deploy()` now accepts

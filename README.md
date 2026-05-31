@@ -110,7 +110,51 @@ Default is `null` (no verify). Recommend always wiring one — a green deploy th
 - `listReleases()` returns the sorted list.
 - `prune({ keep: N })` removes the N oldest.
 
-## DigitalOcean Droplet — first deploy
+## `@absolutejs/deploy/digitalocean` — provision-or-reuse from code (0.2.0)
+
+Skip the click-through DO dashboard. `digitalOceanTarget(options)` looks
+up a droplet by name; creates it via the v2 API if absent; waits for
+`status === 'active'` + IPv4; waits for SSH; returns a `Target` ready to
+hand to `createDeployer`.
+
+```ts
+import { createDeployer } from '@absolutejs/deploy';
+import { digitalOceanTarget } from '@absolutejs/deploy/digitalocean';
+
+const target = await digitalOceanTarget({
+  token: process.env.DO_TOKEN!,
+  name: 'absolutejs-prod-1',          // idempotency key
+  region: 'nyc3',
+  size: 's-1vcpu-1gb',
+  image: 'ubuntu-22-04-x64',
+  sshKeys: [process.env.DO_KEY_FINGERPRINT!],
+  tags: ['absolutejs'],
+  userData: '#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash',
+  onLog: (line) => console.log(line),
+});
+
+console.log(`droplet ${target.dropletId} at ${target.ipv4}`);
+
+const deployer = createDeployer({ appName: 'my-app', target });
+await deployer.deploy({ source: { kind: 'directory', path: './build' } });
+
+// Tear it down when you're done:
+await target.destroy();
+```
+
+Idempotent by `name` — calling twice returns the same droplet, no
+duplicates created. Pair with `cloud-init` user data to install Bun /
+configure the deploy user / set up firewall rules on first boot, then
+the deploy pipeline runs against an SSH-ready box.
+
+Admin helpers: `listDigitalOceanDroplets({ token, tag? })` for
+inventory; `destroyDigitalOceanDroplet({ token, id })` for cleanup
+(404 is treated as idempotent success). Narrow `DigitalOceanClientLike`
+interface so you can BYO `request(method, path, body?)` for retry /
+observability — the bundled `createDigitalOceanClient(token)` is just
+a sensible default.
+
+## DigitalOcean Droplet — first deploy (manual)
 
 Assuming a fresh Ubuntu/Debian Droplet:
 
@@ -129,9 +173,9 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.0.1 does NOT include
+## What v0.2.0 does NOT include
 
-- Provider-specific HTTP-API adapters (Cloudflare Workers, Fly Machines, AWS Fargate, GCP Cloud Run).
+- Provider-specific HTTP-API adapters beyond DigitalOcean (Cloudflare Workers, Fly Machines, AWS Fargate, GCP Cloud Run). Hetzner / Linode / Vultr follow the same shape as `digitalOceanTarget` and are next on the list.
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.
