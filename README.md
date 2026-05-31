@@ -448,6 +448,7 @@ DNS (`DnsProvider`):
   - `@absolutejs/deploy/cloudflare`
   - `@absolutejs/deploy/digitalocean-dns`
   - `@absolutejs/deploy/hetzner-dns`
+  - `@absolutejs/deploy/route53` — narrow client interface; BYO `@aws-sdk/client-route-53` via a 4-line shim, or hand-roll a SigV4 fetch client.
 
 All compute adapters share the same `createCloudTarget` machinery
 (find-or-create + wait-for-ready + wait-for-SSH + sshTarget wrap)
@@ -456,11 +457,10 @@ implement the same `DnsProvider` contract (`list / find / create /
 update / delete / upsert`) so swapping providers is a one-line
 constructor change.
 
-## What v0.8.0 does NOT include
+## What v0.9.0 does NOT include
 
 - Fly Machines compute (different abstraction — ephemeral machines
   with app-scoped naming).
-- Route 53 DNS (AWS SigV4 signing — meaningful design surface).
 - A CLI front-end. Library is complete; the CLI is sugar.
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).

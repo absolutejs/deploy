@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
@@ -26,7 +26,7 @@
     "release"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/digitalocean.ts src/hetzner.ts src/linode.ts src/vultr.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/tls.ts src/env.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/digitalocean.ts src/hetzner.ts src/linode.ts src/vultr.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -96,6 +96,11 @@
       "types": "./dist/hetznerDns.d.ts",
       "import": "./dist/hetznerDns.js",
       "default": "./dist/hetznerDns.js"
+    },
+    "./route53": {
+      "types": "./dist/route53.d.ts",
+      "import": "./dist/route53.js",
+      "default": "./dist/route53.js"
     }
   },
   "files": ["dist", "README.md"]

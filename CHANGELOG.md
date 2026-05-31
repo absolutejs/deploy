@@ -1,5 +1,62 @@
 # @absolutejs/deploy changelog
 
+## 0.9.0 — 2026-05-31
+
+Route 53 DNS provider. Different shape from the other DNS adapters
+(no per-record id, native UPSERT action) so the implementation
+differs more than DO/Hetzner did — but the public `DnsProvider`
+contract stays uniform.
+
+### Added — `@absolutejs/deploy/route53`
+
+- **`route53DnsProvider({ client, hostedZoneId, zoneName })`** —
+  implements `DnsProvider`. Exploits Route 53's native `UPSERT`
+  action: one API call replaces the find-then-create-or-update
+  dance the other providers need.
+- **Narrow `Route53ClientLike` interface** so the package stays
+  zero-peer-dep. Wire your `@aws-sdk/client-route-53` Route53Client
+  with a 4-line shim — `listResourceRecordSets` +
+  `changeResourceRecordSets` are the only methods we touch. Or
+  hand-roll a SigV4-signed fetch client if you want zero deps.
+- **TXT-value wire encoding**: Route 53 requires TXT values to be
+  enclosed in double quotes (and values > 255 chars split into
+  multiple quoted chunks). The adapter wraps on write, unwraps on
+  read — your code sees raw plaintext, the wire sees quoted form.
+- **Synthetic id for delete**: Route 53 deletes require the
+  CURRENT record state, not an opaque id. We encode `{ Name, Type,
+  Values, TTL }` as a base64-JSON synthetic id at read/write time
+  so the `DnsProvider.delete(id)` contract works without a second
+  round-trip.
+- **Idempotent delete**: "InvalidChangeBatch / not found" errors
+  map to `delete()` returning silently — matches the other
+  adapters.
+- **Pagination handled internally** via `IsTruncated` +
+  `NextRecordName` + `NextRecordType`. `list()` returns all pages
+  concatenated.
+- **Apex shorthand**: `name: '@'` resolves to `${zoneName}.`
+
+### Tests
+
+16 new tests covering UPSERT shape, TXT encoding (short / long /
+pre-quoted / round-trip), trailing-dot normalization, apex
+shorthand, default TTL, name + type filter, pagination, synthetic-
+id delete round-trip, delete idempotency, ensureDnsForTarget
+composition.
+
+Test count: 193 → 209.
+
+### Provider matrix at 0.9.0
+
+| Provider | Compute | DNS |
+|----------|---------|-----|
+| DigitalOcean | ✓ | ✓ |
+| Hetzner | ✓ | ✓ |
+| Linode | ✓ | — |
+| Vultr | ✓ | — |
+| Cloudflare | — | ✓ |
+| AWS Route 53 | — | ✓ |
+| Fly Machines | — | — |
+
 ## 0.8.0 — 2026-05-31
 
 Provider fan-out. Four new adapters following the patterns
