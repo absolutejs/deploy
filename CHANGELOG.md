@@ -1,5 +1,78 @@
 # @absolutejs/deploy changelog
 
+## 0.8.0 — 2026-05-31
+
+Provider fan-out. Four new adapters following the patterns
+established by DigitalOcean/Hetzner/Cloudflare in 0.2–0.4: two
+compute targets riding `createCloudTarget`, two DNS providers
+implementing the `DnsProvider` contract.
+
+### Added — compute targets
+
+- **`@absolutejs/deploy/linode`** — `linodeTarget(options)`
+  provisions an instance via the Linode v4 API. Linode-specific
+  mappings: `label` as the idempotency key, `type` (e.g.
+  `g6-nanode-1`), `image` (e.g. `linode/ubuntu22.04`),
+  `authorized_keys` as raw SSH pubkey strings. `root_pass` is
+  auto-generated (32 random chars) since Linode requires it; we
+  rely entirely on `sshKeys` for actual login. IPv4 selection
+  skips RFC 1918 and link-local addresses.
+- **`@absolutejs/deploy/vultr`** — `vultrTarget(options)` provisions
+  via Vultr v2. Idempotent by `label`. SSH keys are pre-registered
+  UUIDs in your Vultr account (not raw key strings — different
+  from Linode + DO + Hetzner). `userData` is base64-encoded on the
+  way out per Vultr's API requirement. `main_ip === '0.0.0.0'`
+  treated as "not yet assigned" so polling continues.
+
+### Added — DNS providers
+
+- **`@absolutejs/deploy/digitalocean-dns`** — `digitalOceanDnsProvider`
+  implementing `DnsProvider`. Reuses the existing
+  `DigitalOceanClientLike` from the compute adapter (one DO token
+  covers both droplets + DNS). Handles DO's "name is relative to
+  domain" convention transparently — pass FQDNs like
+  `'api.example.com'` and the adapter splits/joins as needed.
+- **`@absolutejs/deploy/hetzner-dns`** — `hetznerDnsProvider`
+  implementing `DnsProvider`. NOTE: Hetzner DNS is a separate
+  service from Hetzner Cloud — different base URL, different auth
+  header (`Auth-API-Token`, NOT Bearer). The adapter has its own
+  `HetznerDnsClientLike` interface + `createHetznerDnsClient`
+  factory to keep them distinct.
+
+### Patch — shared helper
+
+`createCloudTarget` is now generic over its id type: `<Server, Id =
+number>`. Lets Vultr (string ids) plug into the same helper as
+DO/Hetzner/Linode (number ids) without per-provider hacks.
+
+### Patch — `DigitalOceanClientLike` widened
+
+The interface's `method` union now includes `'PUT'` and `'PATCH'`
+to support the DNS adapter. Existing compute callers are
+unaffected — the union is wider, not narrower.
+
+### Tests
+
+37 new tests across the four adapters: provision / reuse / list /
+find / destroy / upsert / list-with-filter / find-on-duplicate /
+PUT-on-drift / 404-idempotent / client-builds-auth-header
+/ FQDN-conversion-round-trip / Vultr-base64-user-data /
+Linode-private-IP-skipping.
+
+Test count: 156 → 193.
+
+### Provider matrix at 0.8.0
+
+| Provider | Compute | DNS |
+|----------|---------|-----|
+| DigitalOcean | `/digitalocean` ✓ | `/digitalocean-dns` ✓ |
+| Hetzner | `/hetzner` ✓ | `/hetzner-dns` ✓ |
+| Linode | `/linode` ✓ | — |
+| Vultr | `/vultr` ✓ | — |
+| Cloudflare | — | `/cloudflare` ✓ |
+| Fly Machines | — | — |
+| Route 53 | — | — |
+
 ## 0.7.0 — 2026-05-31
 
 Environment-variable propagation. Closes the "I rotate STRIPE_KEY in

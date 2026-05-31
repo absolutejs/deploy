@@ -27,19 +27,19 @@ import type { Target } from './targets';
 import { sshTarget } from './targets';
 
 /** Provider-specific hooks. Keep these pure of network IO timing — the helper schedules. */
-export type CloudTargetHooks<Server> = {
+export type CloudTargetHooks<Server, Id = number> = {
 	/** Find a server by name. Returns undefined if absent. */
 	findByName: (name: string) => Promise<Server | undefined>;
 	/** Create the server. Closure over provider-specific create params. */
 	create: () => Promise<Server>;
 	/** Fetch a fresh copy of the server by id. Used to poll. */
-	fetch: (id: number) => Promise<Server>;
+	fetch: (id: Id) => Promise<Server>;
 	/** Destroy a server by id. 404 should be treated as idempotent success. */
-	destroy: (id: number) => Promise<void>;
+	destroy: (id: Id) => Promise<void>;
 	/** True when the server has reached its terminal "running" status. */
 	isReady: (server: Server) => boolean;
-	/** Extract the numeric id. */
-	getId: (server: Server) => number;
+	/** Extract the provider-assigned id (number for DO/Hetzner/Linode, string for Vultr). */
+	getId: (server: Server) => Id;
 	/** Extract the public IPv4. Returns undefined while one is being assigned. */
 	getIpv4: (server: Server) => string | undefined;
 	/** Extract the current status as a string (for log lines). */
@@ -92,8 +92,8 @@ export type CloudTargetOptions = {
 	describeTarget: (sshDescription: string) => string;
 };
 
-export type CloudTargetResult = {
-	id: number;
+export type CloudTargetResult<Id = number> = {
+	id: Id;
 	ipv4: string;
 	description: string;
 	exec: Target['exec'];
@@ -142,10 +142,10 @@ const defaultProbeSsh = async (host: string, port: number): Promise<boolean> => 
  * pipeline. Provider-specific adapters wire their `CloudTargetHooks`
  * + their option-shape mapping and return a typed result.
  */
-export const createCloudTarget = async <Server>(
-	hooks: CloudTargetHooks<Server>,
+export const createCloudTarget = async <Server, Id = number>(
+	hooks: CloudTargetHooks<Server, Id>,
 	options: CloudTargetOptions
-): Promise<CloudTargetResult> => {
+): Promise<CloudTargetResult<Id>> => {
 	const log = options.onLog ?? (() => {});
 	const probeSsh = options.probeSsh ?? defaultProbeSsh;
 	const sleep = options.sleep ?? defaultSleep;

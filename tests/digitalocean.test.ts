@@ -18,7 +18,7 @@ import {
 } from '../src/digitalocean';
 
 type RecordedCall = {
-	method: 'GET' | 'POST' | 'DELETE';
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	path: string;
 	body?: unknown;
 };
@@ -42,7 +42,7 @@ const droplet = (
 });
 
 type Script = {
-	method: 'GET' | 'POST' | 'DELETE';
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	pathPrefix: string;
 	respond: (body?: unknown) => unknown;
 };
@@ -54,7 +54,7 @@ const makeClient = (
 	let cursor = 0;
 	const client: DigitalOceanClientLike = {
 		request: async <T>(
-			method: 'GET' | 'POST' | 'DELETE',
+			method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
 			path: string,
 			body?: unknown
 		): Promise<T> => {

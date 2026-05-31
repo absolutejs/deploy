@@ -33,7 +33,7 @@ const DO_API_BASE = 'https://api.digitalocean.com/v2';
  */
 export type DigitalOceanClientLike = {
 	request: <T = unknown>(
-		method: 'GET' | 'POST' | 'DELETE',
+		method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
 		path: string,
 		body?: unknown
 	) => Promise<T>;
@@ -145,7 +145,7 @@ export const createDigitalOceanClient = (
 	const f = options.fetch ?? fetch;
 	return {
 		request: async <T>(
-			method: 'GET' | 'POST' | 'DELETE',
+			method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
 			path: string,
 			body?: unknown
 		): Promise<T> => {

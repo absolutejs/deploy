@@ -434,10 +434,34 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.6.0 does NOT include
+## Provider adapters (0.8.0)
 
-- Cloud-provider compute targets beyond DigitalOcean + Hetzner. Linode / Vultr / Fly Machines follow the same shape and are next on the list.
-- DNS providers beyond Cloudflare. Route 53 / DigitalOcean DNS / Hetzner DNS slot into the same `DnsProvider` contract.
+Compute (`Target` via `createCloudTarget`):
+
+  - `@absolutejs/deploy/digitalocean` — droplets
+  - `@absolutejs/deploy/hetzner` — Hetzner Cloud servers
+  - `@absolutejs/deploy/linode` — Linode instances
+  - `@absolutejs/deploy/vultr` — Vultr instances
+
+DNS (`DnsProvider`):
+
+  - `@absolutejs/deploy/cloudflare`
+  - `@absolutejs/deploy/digitalocean-dns`
+  - `@absolutejs/deploy/hetzner-dns`
+
+All compute adapters share the same `createCloudTarget` machinery
+(find-or-create + wait-for-ready + wait-for-SSH + sshTarget wrap)
+so adding a fifth provider is ~80 lines of glue. All DNS providers
+implement the same `DnsProvider` contract (`list / find / create /
+update / delete / upsert`) so swapping providers is a one-line
+constructor change.
+
+## What v0.8.0 does NOT include
+
+- Fly Machines compute (different abstraction — ephemeral machines
+  with app-scoped naming).
+- Route 53 DNS (AWS SigV4 signing — meaningful design surface).
+- A CLI front-end. Library is complete; the CLI is sugar.
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.
