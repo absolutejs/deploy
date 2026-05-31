@@ -154,6 +154,40 @@ interface so you can BYO `request(method, path, body?)` for retry /
 observability — the bundled `createDigitalOceanClient(token)` is just
 a sensible default.
 
+## `@absolutejs/deploy/hetzner` — provision-or-reuse from code (0.3.0)
+
+Same shape as the DigitalOcean adapter, Hetzner Cloud v1 API
+mappings underneath. Hetzner-specific differences: locations
+(`nbg1` / `fsn1` / `hel1` / `ash` / `hil`), server types
+(`cx22` / `cpx11` / `ccx13` / …), labels (key-value, not array),
+and public-net IPv4/IPv6 are independently toggleable.
+
+```ts
+import { createDeployer } from '@absolutejs/deploy';
+import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+
+const target = await hetznerTarget({
+  token: process.env.HETZNER_TOKEN!,
+  name: 'absolutejs-prod-1',
+  location: 'nbg1',
+  serverType: 'cx22',
+  image: 'ubuntu-22.04',
+  sshKeys: [process.env.HETZNER_KEY_FINGERPRINT!],
+  labels: { env: 'prod', team: 'platform' },
+  userData: '#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash',
+});
+
+const deployer = createDeployer({ appName: 'my-app', target });
+await deployer.deploy({ source: { kind: 'directory', path: './build' } });
+await target.destroy();
+```
+
+Hetzner enforces unique server names per project, so the
+idempotency contract is structural — `name` collisions never
+happen. Admin helpers: `listHetznerServers({ token, labelSelector?
+})` (Hetzner's `'env=prod'` / `'env in (prod,staging)'` syntax);
+`destroyHetznerServer({ token, id })` (404 idempotent success).
+
 ## DigitalOcean Droplet — first deploy (manual)
 
 Assuming a fresh Ubuntu/Debian Droplet:
@@ -173,9 +207,9 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.2.0 does NOT include
+## What v0.3.0 does NOT include
 
-- Provider-specific HTTP-API adapters beyond DigitalOcean (Cloudflare Workers, Fly Machines, AWS Fargate, GCP Cloud Run). Hetzner / Linode / Vultr follow the same shape as `digitalOceanTarget` and are next on the list.
+- Provider-specific HTTP-API adapters beyond DigitalOcean + Hetzner (Cloudflare Workers, Fly Machines, AWS Fargate, GCP Cloud Run). Linode / Vultr follow the same shape and are next on the list.
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.

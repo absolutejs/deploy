@@ -1,5 +1,42 @@
 # @absolutejs/deploy changelog
 
+## 0.3.0 — 2026-05-31
+
+Second cloud-provider adapter — sibling to the DO adapter shipped
+in 0.2.0. Same shape, Hetzner Cloud v1 API mappings.
+
+### Added — `@absolutejs/deploy/hetzner` subpath
+
+- **`hetznerTarget(options)`** — provision-or-reuse a Hetzner Cloud
+  server by name, wait for `status === 'running'` + IPv4, wait for
+  SSH readiness, return a `Target` that wraps `sshTarget` plus
+  `{ serverId, ipv4, destroy() }`. Hetzner enforces unique server
+  names per project, so idempotency is structural.
+- **`createHetznerClient(token, options?)`** — fetch-backed default
+  client against `api.hetzner.cloud/v1`. Throws `HetznerError`
+  (with `status` + parsed body) on non-2xx.
+- **`findHetznerServer(client, name)`** — exact-name lookup; throws
+  defensively on (impossible) duplicates.
+- **`listHetznerServers({ token?|client?, labelSelector? })`** — list
+  all servers or filter by label selector (Hetzner's k=v selector
+  syntax, e.g. `'env=prod'`).
+- **`destroyHetznerServer({ token?|client?, id })`** — DELETE; 404
+  is treated as idempotent success.
+- **Public-net flags** — `disablePublicIpv4` / `disablePublicIpv6`
+  for private-network-only servers (default: both enabled).
+- **Labels + cloud-init + private networks** — `labels`, `userData`,
+  `networkId` forwarded to the create payload.
+
+### Build
+
+- Added `src/hetzner.ts` as a third bundle entry, producing
+  `dist/hetzner.{js,d.ts,js.map}`. New `./hetzner` subpath in
+  `package.json` exports.
+
+### Tests
+
+19 new tests against a mock client. Test count 46 → 65.
+
 ## 0.2.0 — 2026-05-31
 
 Cloud-provider Target adapter. The first piece of "manage hosting from
