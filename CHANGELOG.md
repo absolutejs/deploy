@@ -1,5 +1,61 @@
 # @absolutejs/deploy changelog
 
+## 0.6.0 — 2026-05-31
+
+Cert-renewal scheduling. The 0.5.0 `issueCertificate` was one-shot;
+this release adds the "should we renew yet?" gate so operators can
+wire one function call to a weekly cron / scheduled-function and
+have it Do The Right Thing.
+
+### Added — `inspectCertificate(pem, { now? }?)`
+
+Parses a PEM certificate via `node:crypto`'s `X509Certificate` and
+returns operator-shaped metadata:
+
+  - `subjects` — CN + every SAN, deduplicated
+  - `validFrom` / `validTo` — ms since epoch
+  - `daysRemaining` — whole days until `validTo` (negative if expired)
+  - `expired` — convenience boolean
+  - `issuer` — issuer DN string
+
+Standalone primitive — fine for status pages, alerts ("cert expires
+in 14 days"), and observability dashboards.
+
+### Added — `renewCertificate(options)`
+
+Conditional renewal driver. Extends `IssueCertificateOptions` with:
+
+  - `currentCertificatePem?` — when present, the cert's `validTo`
+    decides; when absent, always issues (first-time path).
+  - `renewWhenDaysRemaining?` — re-issue threshold (default 30 days,
+    matching certbot's standard schedule on Let's Encrypt's 90-day
+    certs — leaves a 60-day error budget).
+  - `force?` — bypass the freshness check (default false).
+  - `now?` — clock override for tests.
+
+Returns a discriminated `RenewalResult`:
+
+  - `{ renewed: true, certificate, reason }` where `reason` is one of
+    `'forced'` / `'no-current-cert'` / `'expiring-soon'`.
+  - `{ renewed: false, reason: 'still-fresh', inspection }` — cheap
+    no-op when the cert has > threshold days left.
+
+Idempotent: a fresh cert returns `{ renewed: false }` after one PEM
+parse, zero network IO. Pair with `installCertificateOnTarget` to
+swap on the box only when `result.renewed === true`.
+
+### Tests
+
+11 new tests (`tests/renewal.test.ts`) covering inspection of an
+openssl-generated self-signed cert + every renewal-decision branch
+(`still-fresh` / `expiring-soon` / `expired` / `forced` /
+`no-current-cert` / custom threshold / negative-threshold guard).
+Issuance itself is short-circuited via a failing fetch stub so
+tests don't hit ACME. Skipped automatically if openssl isn't on
+PATH.
+
+Test count: 126 → 137.
+
 ## 0.5.1 — 2026-05-31
 
 Crypto-correctness validation for the 0.5.0 ACME client. The

@@ -21,6 +21,7 @@
  *      hit Let's Encrypt's account-creation rate limit)
  */
 
+import { X509Certificate } from 'node:crypto';
 import type { Target } from './targets';
 import type { DnsProvider } from './dns';
 
@@ -852,4 +853,153 @@ export const installCertificateOnTarget = async (
 	}
 
 	return { certPath, keyPath };
+};
+
+// =============================================================================
+// Certificate inspection + renewal scheduling
+// =============================================================================
+
+export type CertificateInspection = {
+	/** CN + every SAN, deduplicated. */
+	subjects: string[];
+	/** Issuance time, ms since epoch. */
+	validFrom: number;
+	/** Expiration time, ms since epoch. */
+	validTo: number;
+	/** Whole days remaining before `validTo`. Negative if expired. */
+	daysRemaining: number;
+	/** True when the cert is past `validTo`. */
+	expired: boolean;
+	/** Issuer DN string (for "Let's Encrypt vs staging vs other CA" checks). */
+	issuer: string;
+};
+
+const parseSubjects = (x509: X509Certificate): string[] => {
+	const subjects = new Set<string>();
+	const cnMatch = x509.subject.match(/CN=([^,\n]+)/);
+	if (cnMatch !== null && cnMatch[1] !== undefined) {
+		subjects.add(cnMatch[1].trim());
+	}
+	const san = x509.subjectAltName;
+	if (san !== undefined && san !== null) {
+		for (const part of san.split(',')) {
+			const dnsMatch = part.trim().match(/^DNS:(.+)$/);
+			if (dnsMatch !== null && dnsMatch[1] !== undefined) {
+				subjects.add(dnsMatch[1].trim());
+			}
+		}
+	}
+	return [...subjects];
+};
+
+/**
+ * Parse a PEM certificate into operator-shaped metadata. Used by
+ * {@link renewCertificate} to decide whether to re-issue; also fine
+ * for status pages and observability.
+ */
+export const inspectCertificate = (
+	pem: string,
+	options: { now?: () => number } = {}
+): CertificateInspection => {
+	const x509 = new X509Certificate(pem);
+	const validFrom = new Date(x509.validFrom).getTime();
+	const validTo = new Date(x509.validTo).getTime();
+	const now = (options.now ?? Date.now)();
+	const daysRemaining = Math.floor(
+		(validTo - now) / (24 * 60 * 60 * 1000)
+	);
+	return {
+		daysRemaining,
+		expired: validTo < now,
+		issuer: x509.issuer,
+		subjects: parseSubjects(x509),
+		validFrom,
+		validTo
+	};
+};
+
+export type RenewCertificateOptions = IssueCertificateOptions & {
+	/**
+	 * Current cert PEM. When provided, the cert's `validTo` decides
+	 * whether to re-issue; when absent, renewal always issues.
+	 */
+	currentCertificatePem?: string;
+	/**
+	 * Re-issue when fewer than this many days remain. Default 30,
+	 * matching certbot's standard schedule (Let's Encrypt issues 90-day
+	 * certs; renewing at 30 days leaves a 60-day error budget).
+	 */
+	renewWhenDaysRemaining?: number;
+	/** Force re-issue regardless of remaining days. Default false. */
+	force?: boolean;
+	/** Override `Date.now()` for testing. */
+	now?: () => number;
+};
+
+export type RenewalResult =
+	| {
+			renewed: true;
+			certificate: IssuedCertificate;
+			reason: 'forced' | 'no-current-cert' | 'expiring-soon';
+	  }
+	| {
+			renewed: false;
+			reason: 'still-fresh';
+			inspection: CertificateInspection;
+	  };
+
+/**
+ * Conditional cert renewal. Parses the supplied cert (if any),
+ * decides whether to re-issue based on remaining days, and either
+ * returns the existing cert info ("still fresh") or issues a new
+ * one via {@link issueCertificate}.
+ *
+ * Wire to a scheduled function (cron / @absolutejs/sync schedule /
+ * GitHub Action) running at least once a week. Idempotent: a fresh
+ * cert returns `renewed: false` cheaply (one PEM parse, zero
+ * network IO).
+ *
+ * @example
+ *   const result = await renewCertificate({
+ *     currentCertificatePem: existingPem,  // omit to force first-issue
+ *     domains: ['api.example.com'],
+ *     dnsProvider: dns,
+ *     email: 'ops@example.com',
+ *     account: persistedAccount,           // reuse to avoid CA rate limit
+ *   });
+ *   if (result.renewed) {
+ *     await installCertificateOnTarget(target, result.certificate, { reload });
+ *   }
+ */
+export const renewCertificate = async (
+	options: RenewCertificateOptions
+): Promise<RenewalResult> => {
+	const threshold = options.renewWhenDaysRemaining ?? 30;
+	if (threshold < 0) {
+		throw new Error(
+			'[deploy/tls] renewWhenDaysRemaining must be non-negative'
+		);
+	}
+
+	if (options.force === true) {
+		const certificate = await issueCertificate(options);
+		return { certificate, reason: 'forced', renewed: true };
+	}
+
+	if (options.currentCertificatePem === undefined) {
+		const certificate = await issueCertificate(options);
+		return { certificate, reason: 'no-current-cert', renewed: true };
+	}
+
+	const nowFn = options.now ?? Date.now;
+	const inspection = inspectCertificate(options.currentCertificatePem, {
+		now: nowFn
+	});
+
+	if (!inspection.expired && inspection.daysRemaining >= threshold) {
+		return { inspection, reason: 'still-fresh', renewed: false };
+	}
+
+	const certificate = await issueCertificate(options);
+	return { certificate, reason: 'expiring-soon', renewed: true };
 };

@@ -287,6 +287,57 @@ limit). Persist the JSON; pass `account` back to subsequent
 mode `600`. Override `certPath` / `keyPath` / `mode` / `owner` /
 `reload` as needed.
 
+## Renewals — `renewCertificate` (0.6.0)
+
+`issueCertificate` is one-shot; `renewCertificate` is the conditional
+driver you wire to a cron / scheduled function. Reads the current
+cert PEM, parses its `validTo`, and either returns `{ renewed: false
+}` (cheap, no network IO) or runs the full issuance flow.
+
+```ts
+import {
+  renewCertificate,
+  installCertificateOnTarget,
+  importAccount,
+} from '@absolutejs/deploy/tls';
+import { readFile, writeFile } from 'node:fs/promises';
+
+const currentCertificatePem = await readFile('./cert.pem', 'utf8').catch(() => undefined);
+const account = await importAccount(
+  JSON.parse(await readFile('./account.json', 'utf8'))
+);
+
+const result = await renewCertificate({
+  currentCertificatePem,
+  domains: ['api.example.com'],
+  dnsProvider: dns,
+  email: 'ops@example.com',
+  account,
+  renewWhenDaysRemaining: 30,        // default
+});
+
+if (result.renewed) {
+  console.log(`renewed (${result.reason})`);
+  await installCertificateOnTarget(target, result.certificate, {
+    reload: 'systemctl reload nginx',
+  });
+  await writeFile('./cert.pem', result.certificate.certificatePem);
+  await writeFile('./key.pem', result.certificate.privateKeyPem);
+} else {
+  console.log(
+    `still fresh — ${result.inspection.daysRemaining} days remaining`
+  );
+}
+```
+
+Pair with `inspectCertificate(pem)` for status pages, expiry
+alerts, and observability:
+
+```ts
+const info = inspectCertificate(certificatePem);
+// { subjects, validFrom, validTo, daysRemaining, expired, issuer }
+```
+
 ## DigitalOcean Droplet — first deploy (manual)
 
 Assuming a fresh Ubuntu/Debian Droplet:
@@ -306,11 +357,10 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
-## What v0.5.0 does NOT include
+## What v0.6.0 does NOT include
 
 - Cloud-provider compute targets beyond DigitalOcean + Hetzner. Linode / Vultr / Fly Machines follow the same shape and are next on the list.
 - DNS providers beyond Cloudflare. Route 53 / DigitalOcean DNS / Hetzner DNS slot into the same `DnsProvider` contract.
-- Cert renewal scheduling — `issueCertificate` is one-shot; wire it to a cron / scheduled-function and pass the persisted account JSON back in to renew. (Convention: renew at 30 days remaining.)
 - Bun installation on the remote — caller does it once, out of band.
 - Multi-target / fan-out deploys (caller iterates).
 - Zero-downtime port-swap (start new release on a fresh port, then nginx-reload). The default pipeline does stop-then-start; for true zero-downtime, replace the `restart` step.
