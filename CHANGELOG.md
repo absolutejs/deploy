@@ -1,5 +1,60 @@
 # @absolutejs/deploy changelog
 
+## 0.10.0 — 2026-05-31
+
+Preview deploys. Closes G10 from the second-pass PaaS audit — the
+substrate now has ephemeral-environment orchestration on top of the
+release / DNS / target machinery from prior versions.
+
+### Added — `@absolutejs/deploy/preview`
+
+- **`createPreviewFleet({ baseDomain, dns?, ipv4?, makeDeployer,
+  stop?, afterTeardown?, store?, ... })`** — tenant-aware fleet that
+  composes the existing `Deployer` (release dirs + atomic symlink
+  swap + rollback) with a `DnsProvider` and a persistent registry.
+- **`fleet.create({ previewId, commitSha?, annotations?, hostname?
+  })`** — idempotent on `previewId`: existing previews reuse port +
+  `createdAt`, run a fresh `deployer.deploy()` so PR pushes roll
+  forward. New previews allocate from the configured port range
+  (default `[3100, 3899]`) and upsert an A record at
+  `<slug(previewId)>.<baseDomain>` → `ipv4`. Slugifier normalizes
+  branch / PR names (`PR/Feature_Branch` → `pr-feature-branch`).
+- **`fleet.teardown(previewId)`** — runs `stop` hook → removes DNS
+  record → drops registry entry → runs `afterTeardown` hook. Stop
+  failures don't block DNS removal. DNS deletes on already-removed
+  records are swallowed. Unknown previewIds are no-ops.
+- **`fleet.gc({ olderThanMs })`** — sweeps previews older than a
+  threshold via `teardown`. Returns `{ removed, errors }` so a
+  daily cron can run unattended.
+- **`createMemoryPreviewStore()`** — for tests / ephemeral fleets.
+- **`createFilePreviewStore(root)`** — single-file JSON registry
+  with atomic writes (`tmp` + `rename`). Corrupt files fall back to
+  empty so a botched write doesn't strand the next deploy.
+
+### Design notes
+
+- Substrate owns fleet bookkeeping (ports, DNS, registry). The
+  caller-supplied `makeDeployer` factory owns *application*
+  concerns: target choice, env, processManager, secrets snapshot.
+- DNS is optional. When absent, the fleet returns a hostname + URL
+  and the caller is responsible for routing.
+- `dnsTtl` defaults to 60s — previews come and go, low cache
+  lifetime matches the use case.
+- No assembly recipe shipped: per the no-public-PaaS-assembly rule,
+  the bot that wires a fleet to a webhook lives in the private
+  control-plane repo, not in `examples/`.
+
+### Tests
+
+25 new tests covering: hostname slugify + override; port range
+allocation + exhaustion; custom `allocatePort`; per-port uniqueness;
+idempotent re-create on same previewId reusing port + `createdAt`;
+annotation pass-through + commitSha lift; DNS upsert with custom
+TTL / proxied flag; missing-ipv4 guard; teardown happy path;
+unknown-id no-op; stop-throws isolation; DNS-delete failure
+swallowed; gc threshold; file store round-trip + overwrite +
+corruption recovery.
+
 ## 0.9.0 — 2026-05-31
 
 Route 53 DNS provider. Different shape from the other DNS adapters
