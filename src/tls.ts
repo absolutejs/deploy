@@ -802,6 +802,28 @@ const defaultWriteFile = async (
 };
 
 /**
+ * @internal — exposed for unit testing of cryptographic primitives.
+ * Not part of the public API; consumers should NOT depend on this.
+ */
+export const __testing = {
+	base64UrlDecode,
+	base64UrlEncode,
+	base64UrlEncodeString,
+	buildCsr,
+	derBitString,
+	derInt,
+	derOid,
+	derSeq,
+	derSet,
+	ecdsaRawToDer,
+	exportEcPrivateKeyPem,
+	exportPublicJwk,
+	generateCertKeyPair,
+	jwkThumbprint,
+	signJws
+};
+
+/**
  * Upload cert + private key to the target. Composable with the deploy
  * pipeline as a verify-step or post-deploy hook.
  */

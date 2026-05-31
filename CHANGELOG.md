@@ -1,5 +1,62 @@
 # @absolutejs/deploy changelog
 
+## 0.5.1 — 2026-05-31
+
+Crypto-correctness validation for the 0.5.0 ACME client. The
+mock-server tests verify the call shape; these add byte-level
+verification of the primitives.
+
+### Added — `tests/cryptoVectors.test.ts`
+
+29 new tests against the internal cryptographic helpers (now
+exposed via `tls.__testing` with `@internal` marker — not part of
+the public API):
+
+- **base64url**: padding-stripped encoding, URL-safe alphabet,
+  round-trip via `base64UrlDecode`, RFC 7515 §A.1 sample
+  decode.
+- **DER INTEGER**: 0 / 1 / 127 / 128 / 255 / 256 byte-exact;
+  positive-from-Uint8Array with high-bit-set leading-zero rule;
+  leading-zero stripping.
+- **DER OBJECT IDENTIFIER**: ecdsa-with-SHA256, commonName,
+  subjectAltName, PKCS#9 extensionRequest — all byte-exact
+  against well-known encodings.
+- **DER SEQUENCE/SET length encoding**: short-form (< 128),
+  long-form 1-byte length (128-255), long-form 2-byte length
+  (256+).
+- **ECDSA raw ↔ DER signature**: high-bit-set leading-zero rule
+  on `r` and `s`; leading-zero stripping.
+- **JWK thumbprint**: matches an independent SHA-256-of-canonical-
+  JSON computation; ignores non-required JWK fields (canonical
+  order is required-fields-only).
+- **JWS sign+verify round-trip**: signed payload's signature
+  verifies with the public key.
+- **POST-as-GET**: empty-string payload, NOT empty-object.
+- **CSR via openssl**: `openssl req -verify` accepts the CSR
+  (validates structure + signature); `openssl req -text` dumps
+  it with the expected subject CN + SAN extension covering both
+  domains. Skipped automatically if openssl isn't on PATH.
+
+### Added — `scripts/test-staging.ts`
+
+Optional manual end-to-end runner. Reads CLOUDFLARE_TOKEN /
+CLOUDFLARE_ZONE_ID / ACME_EMAIL / TEST_DOMAIN from env; issues a
+real cert from Let's Encrypt staging; parses the result via
+`node:crypto`'s `X509Certificate`. Driven by the developer with
+their own zone — not in CI. Pass `--reuse-account` for the
+renewal-path validation.
+
+### Patch — internal exports
+
+`tls.__testing` exposes the internal helpers (`base64UrlEncode`,
+`derInt`, `derOid`, `derSeq`, `derSet`, `derBitString`,
+`ecdsaRawToDer`, `exportPublicJwk`, `jwkThumbprint`, `signJws`,
+`buildCsr`, `generateCertKeyPair`, `exportEcPrivateKeyPem`,
+`base64UrlEncodeString`, `base64UrlDecode`). Marked `@internal`;
+consumers should NOT depend on this surface.
+
+Test count: 97 → 126.
+
 ## 0.5.0 — 2026-05-31
 
 TLS / Let's Encrypt automation. After provisioning a Target and
