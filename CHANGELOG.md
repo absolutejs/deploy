@@ -1,5 +1,20 @@
 # @absolutejs/deploy changelog
 
+## 0.12.0 — 2026-07-14
+
+Cancellation for control-plane deployment races.
+
+### Added
+
+- **`deployer.deploy({ signal })`** checks an `AbortSignal` before and after
+  every pipeline step and exposes it on `DeployContext` for custom steps and
+  verification probes. A cancelled pipeline records its current step as
+  failed and runs the existing error hooks.
+
+This lets a control plane make unpublish authoritative while a build is in
+flight: abort the pipeline, stop its process manager, and no later step can
+relaunch the release.
+
 ## 0.11.0 — 2026-07-14
 
 Active-release lifecycle control for control planes and container-backed

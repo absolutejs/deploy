@@ -50,6 +50,13 @@ await deployer.prune({ keep: 5 });
 
 // sunset the active process through the same process-manager contract
 await deployer.stop();
+
+// control planes can make teardown win a publish/unpublish race
+const controller = new AbortController();
+const pending = deployer.deploy({ signal: controller.signal });
+controller.abort();
+await pending.catch(() => undefined);
+await deployer.stop();
 ```
 
 ## v0.0.1 surface

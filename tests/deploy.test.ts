@@ -535,3 +535,45 @@ describe('active process lifecycle', () => {
 		await expect(deployer.stop()).rejects.toThrow(/does not support stop/);
 	});
 });
+
+describe('deployment cancellation', () => {
+	test('aborts before the first step without mutating the target', async () => {
+		const controller = new AbortController();
+		controller.abort(new Error('publish cancelled'));
+		let ran = false;
+		const { target } = makeMockTarget();
+		const deployer = createDeployer({
+			appName: 'demo',
+			source: { kind: 'directory', root: '/local' },
+			steps: [{ name: 'mutate', run: async () => { ran = true; } }],
+			target
+		});
+
+		await expect(deployer.deploy({ signal: controller.signal })).rejects.toThrow('publish cancelled');
+		expect(ran).toBe(false);
+	});
+
+	test('stops before the next step when cancellation happens in-flight', async () => {
+		const controller = new AbortController();
+		const order: string[] = [];
+		const { target } = makeMockTarget();
+		const deployer = createDeployer({
+			appName: 'demo',
+			source: { kind: 'directory', root: '/local' },
+			steps: [
+				{
+					name: 'first',
+					run: async () => {
+						order.push('first');
+						controller.abort(new Error('publish cancelled'));
+					}
+				},
+				{ name: 'second', run: async () => { order.push('second'); } }
+			],
+			target
+		});
+
+		await expect(deployer.deploy({ signal: controller.signal })).rejects.toThrow('publish cancelled');
+		expect(order).toEqual(['first']);
+	});
+});

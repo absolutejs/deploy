@@ -55,6 +55,8 @@ export type DeployContext = {
 	processManager: ProcessManager;
 	verify: VerifySpec | null;
 	annotations: ReleaseAnnotations;
+	/** Optional cancellation signal shared with custom steps and verify hooks. */
+	signal?: AbortSignal;
 	/** When `true`, steps log what they WOULD do via hooks.onLog and do not mutate the target. */
 	dryRun: boolean;
 };
@@ -76,6 +78,8 @@ type ResolvedHooks = Required<{
 }>;
 
 export type DeployOptions = {
+	/** Cancel before the next pipeline step; custom steps may observe it directly. */
+	signal?: AbortSignal;
 	/** Per-release annotations stored alongside the release dir as `.deploy-meta.json`. */
 	annotations?: ReleaseAnnotations;
 	/**
@@ -328,7 +332,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 
 	const buildCtx = (
 		releaseId: string,
-		opts: { annotations: ReleaseAnnotations; dryRun: boolean },
+		opts: { annotations: ReleaseAnnotations; dryRun: boolean; signal?: AbortSignal },
 	): DeployContext => ({
 		annotations: opts.annotations,
 		appName: options.appName,
@@ -337,6 +341,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 		env,
 		hooks,
 		processManager,
+		signal: opts.signal,
 		releaseId,
 		releasePath: `${releasesPath}/${releaseId}`,
 		source: options.source,
@@ -386,11 +391,13 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 			annotations: ReleaseAnnotations;
 			dryRun: boolean;
 			alreadyCompleted: string[];
+			signal?: AbortSignal;
 		},
 	): Promise<DeployResult> => {
 		const ctx = buildCtx(releaseId, {
 			annotations: runOpts.annotations,
 			dryRun: runOpts.dryRun,
+			signal: runOpts.signal,
 		});
 		const stepDurations: { name: string; durationMs: number; skipped?: boolean }[] = [];
 		const startedAt = clock();
@@ -407,6 +414,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 		// `prepare` sets up. Until then we have nowhere to put it.
 
 		for (const step of steps) {
+			ctx.signal?.throwIfAborted();
 			if (completedSteps.includes(step.name) && step.name !== 'verify') {
 				// Resume: skip steps already done. (Always re-run verify so a
 				// healthy probe is recorded post-resume.)
@@ -426,6 +434,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 
 			try {
 				await step.run(ctx);
+				ctx.signal?.throwIfAborted();
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
 				record.status = 'failed';
@@ -499,6 +508,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 					alreadyCompleted: prior.completedSteps,
 					annotations: prior.annotations ?? annotations,
 					dryRun,
+					signal: deployOpts.signal,
 				});
 			}
 
@@ -507,6 +517,7 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 				alreadyCompleted: [],
 				annotations,
 				dryRun,
+				signal: deployOpts.signal,
 			});
 		},
 		dispose: async () => {
