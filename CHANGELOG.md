@@ -1,5 +1,18 @@
 # @absolutejs/deploy changelog
 
+## 0.13.0 — 2026-07-14
+
+Delegated DNS-01 support for hosted custom domains.
+
+### Added
+
+- **`mapDnsChallengeRecord`** on `issueCertificate` and `renewCertificate`
+  maps the TXT record written through the configured `DnsProvider` while the
+  propagation checker continues to observe the public ACME challenge name.
+  This supports customer-owned `_acme-challenge` CNAMEs delegated into a
+  platform-controlled validation zone without requiring customer DNS API
+  credentials.
+
 ## 0.12.0 — 2026-07-14
 
 Cancellation for control-plane deployment races.

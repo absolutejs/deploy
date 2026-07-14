@@ -296,6 +296,32 @@ describe('issueCertificate — full flow against mock ACME server', () => {
 		expect(upsert.content.length).toBeGreaterThan(20);
 	});
 
+	test('maps provider writes for CNAME-delegated dns-01', async () => {
+		const dns = mockDnsProvider();
+		const acme = makeAcmeFetch();
+		const propagationChecks: string[] = [];
+		await issueCertificate(
+			baseOptions({
+				checkDnsPropagated: async (recordName) => {
+					propagationChecks.push(recordName);
+
+					return true;
+				},
+				dnsProvider: dns.provider,
+				fetch: acme.fetcher,
+				mapDnsChallengeRecord: ({ domain }) =>
+					`${domain.replaceAll('.', '-')}.validation.absolutejs.ai`
+			})
+		);
+
+		expect(dns.upsertLog[0]?.name).toBe(
+			'api-example-com.validation.absolutejs.ai'
+		);
+		expect(propagationChecks).toEqual([
+			'_acme-challenge.api.example.com'
+		]);
+	});
+
 	test('cleans up the dns-01 TXT record on success', async () => {
 		const dns = mockDnsProvider();
 		const acme = makeAcmeFetch();

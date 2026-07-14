@@ -464,6 +464,17 @@ export type IssueCertificateOptions = {
 	domains: string[];
 	/** DNS provider used for DNS-01 challenges (must own the zone). */
 	dnsProvider: DnsProvider;
+	/**
+	 * Map the public ACME challenge name to the record name written through
+	 * `dnsProvider`. Use this for CNAME-delegated DNS-01, where customers point
+	 * `_acme-challenge.app.example.com` at a platform-owned validation zone.
+	 * The propagation checker still receives the public challenge name because
+	 * that is what the certificate authority resolves.
+	 */
+	mapDnsChallengeRecord?: (context: {
+		domain: string;
+		recordName: string;
+	}) => string;
 	/** Contact email for the ACME account. */
 	email: string;
 	/** ACME directory URL. Default Let's Encrypt production. */
@@ -659,16 +670,30 @@ export const issueCertificate = async (
 			);
 			const txtValue = base64UrlEncode(txtBytes);
 			const recordName = `_acme-challenge.${auth.identifier.value}`;
-			log(`[tls] DNS-01: setting ${recordName} = "${txtValue}"`);
+			const providerRecordName =
+				options.mapDnsChallengeRecord?.({
+					domain: auth.identifier.value,
+					recordName
+				}) ?? recordName;
+			if (providerRecordName.trim().length === 0) {
+				throw new Error(
+					'[deploy/tls] mapped DNS-01 record name must not be empty'
+				);
+			}
+			log(
+				providerRecordName === recordName
+					? `[tls] DNS-01: setting ${recordName} = "${txtValue}"`
+					: `[tls] DNS-01: setting delegated ${providerRecordName} for ${recordName} = "${txtValue}"`
+			);
 			const record = await options.dnsProvider.upsert({
 				content: txtValue,
-				name: recordName,
+				name: providerRecordName,
 				ttl: 60,
 				type: 'TXT'
 			});
 			dnsCreated.push({
 				recordId: record.id,
-				recordName,
+				recordName: providerRecordName,
 				recordValue: txtValue
 			});
 			cleanups.push(() => options.dnsProvider.delete(record.id));

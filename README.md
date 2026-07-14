@@ -288,6 +288,21 @@ await installCertificateOnTarget(target, cert, {
 });
 ```
 
+For hosted platforms, customers can delegate only the ACME challenge instead
+of granting access to their DNS account. Ask them to CNAME
+`_acme-challenge.app.customer.com` into a validation zone you control, then
+map the provider write while leaving propagation checks on the public name:
+
+```ts
+const cert = await issueCertificate({
+  domains: ['app.customer.com'],
+  dnsProvider: platformValidationDns,
+  email: 'ops@platform.example',
+  mapDnsChallengeRecord: ({ domain }) =>
+    `${stableDomainToken(domain)}.acme.platform.example`,
+});
+```
+
 `generateAccountKey()` / `exportAccount()` / `importAccount()`
 round-trip the ECDSA P-256 keypair + `kid` so cert renewals reuse
 the same account (avoids Let's Encrypt's account-creation rate
