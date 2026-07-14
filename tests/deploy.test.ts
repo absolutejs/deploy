@@ -491,3 +491,47 @@ describe('dispose', () => {
 		await expect(deployer.deploy()).rejects.toThrow(/disposed/);
 	});
 });
+
+describe('active process lifecycle', () => {
+	test('delegates stop and status with the active release context', async () => {
+		const contexts: Array<{ currentPath: string; releaseId: string }> = [];
+		const manager: ProcessManager = {
+			reload: async () => undefined,
+			status: async (_target, context) => {
+				contexts.push(context);
+				return 'running';
+			},
+			stop: async (_target, context) => {
+				contexts.push(context);
+			}
+		};
+		const { target } = makeMockTarget();
+		const deployer = createDeployer({
+			appName: 'demo',
+			processManager: manager,
+			rootPath: '/opt/demo',
+			source: { kind: 'directory', root: '/local' },
+			target
+		});
+
+		expect(await deployer.status()).toBe('running');
+		await deployer.stop();
+		expect(contexts.map(({ currentPath, releaseId }) => ({ currentPath, releaseId }))).toEqual([
+			{ currentPath: '/opt/demo/current', releaseId: 'current' },
+			{ currentPath: '/opt/demo/current', releaseId: 'current' }
+		]);
+	});
+
+	test('reports unknown without status and rejects unsupported stop', async () => {
+		const { target } = makeMockTarget();
+		const deployer = createDeployer({
+			appName: 'demo',
+			processManager: { reload: async () => undefined },
+			source: { kind: 'directory', root: '/local' },
+			target
+		});
+
+		expect(await deployer.status()).toBe('unknown');
+		await expect(deployer.stop()).rejects.toThrow(/does not support stop/);
+	});
+});

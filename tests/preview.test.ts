@@ -98,7 +98,9 @@ const makeMockDeployer = (
 	readReleaseMeta: async () => null,
 	rollback: async () => {
 		throw new Error('rollback not used');
-	}
+	},
+	status: async () => 'unknown',
+	stop: async () => undefined
 });
 
 // =============================================================================

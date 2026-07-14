@@ -1,5 +1,23 @@
 # @absolutejs/deploy changelog
 
+## 0.11.0 — 2026-07-14
+
+Active-release lifecycle control for control planes and container-backed
+process managers.
+
+### Added
+
+- **`deployer.stop()`** delegates teardown to the configured process manager
+  using the active `current` release context. It fails explicitly when a
+  custom manager does not implement stop instead of reporting a false success.
+- **`deployer.status()`** exposes the configured manager's active status and
+  returns `unknown` when the manager has no status probe.
+
+These operations let a control plane own deploy, rollback, inspection, and
+sunset through the same substrate object. In particular, Docker-backed hosts
+can now implement the existing `ProcessManager` contract without retaining a
+parallel teardown path outside `@absolutejs/deploy`.
+
 ## 0.10.0 — 2026-05-31
 
 Preview deploys. Closes G10 from the second-pass PaaS audit — the

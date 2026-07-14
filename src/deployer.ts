@@ -137,6 +137,10 @@ export type DeployResult = {
 export type Deployer = {
 	deploy: (options?: DeployOptions) => Promise<DeployResult>;
 	rollback: (releaseId: string) => Promise<DeployResult>;
+	/** Stop the active release through the configured process manager. */
+	stop: () => Promise<void>;
+	/** Best-effort active process status from the configured process manager. */
+	status: () => Promise<'running' | 'stopped' | 'unknown'>;
 	listReleases: () => Promise<string[]>;
 	/** Read the deploy meta for a specific release (or null if missing). */
 	readReleaseMeta: (releaseId: string) => Promise<ReleaseRecord | null>;
@@ -462,6 +466,13 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 		const result = await options.target.exec(`mkdir -p ${releasesPath}`, { timeoutMs: 10_000 });
 		requireSuccess('ensureRoot', result);
 	};
+	const activeProcessContext = (): ProcessManagerContext => ({
+		appName: options.appName,
+		currentPath,
+		env,
+		releaseId: 'current',
+		releasePath: currentPath,
+	});
 
 	return {
 		deploy: async (deployOpts: DeployOptions = {}) => {
@@ -556,6 +567,18 @@ export const createDeployer = (options: DeployerOptions): Deployer => {
 				annotations: prior?.annotations ?? {},
 				dryRun: false,
 			});
+		},
+		status: async () => {
+			if (disposed) throw new Error('Deployer is disposed');
+			if (!processManager.status) return 'unknown';
+			return processManager.status(options.target, activeProcessContext());
+		},
+		stop: async () => {
+			if (disposed) throw new Error('Deployer is disposed');
+			if (!processManager.stop) {
+				throw new Error('Process manager does not support stop');
+			}
+			await processManager.stop(options.target, activeProcessContext());
 		},
 	};
 };

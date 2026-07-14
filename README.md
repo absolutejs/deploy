@@ -39,12 +39,17 @@ const deployer = createDeployer({
 const release = await deployer.deploy();
 console.log(`Deployed ${release.releaseId} in ${release.durationMs}ms`);
 
+console.log(await deployer.status());
+
 // later — atomic rollback
 const previous = (await deployer.listReleases()).at(-2);
 if (previous) await deployer.rollback(previous);
 
 // optional housekeeping
 await deployer.prune({ keep: 5 });
+
+// sunset the active process through the same process-manager contract
+await deployer.stop();
 ```
 
 ## v0.0.1 surface
