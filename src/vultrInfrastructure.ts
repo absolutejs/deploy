@@ -137,7 +137,9 @@ export const createVultrInfrastructureProvider = (
           region: region.region,
           sshkey_id: [...region.sshKeys],
           tags: [tag],
-          ...(region.userData ? { user_data: btoa(region.userData) } : {}),
+          ...(input.userData ?? region.userData
+            ? { user_data: btoa(input.userData ?? region.userData ?? "") }
+            : {}),
         },
       );
 

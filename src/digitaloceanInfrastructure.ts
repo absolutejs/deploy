@@ -167,7 +167,9 @@ export const createDigitalOceanInfrastructureProvider = (
           size: region.size,
           ssh_keys: [...region.sshKeys],
           tags: [options.tag],
-          ...(region.userData ? { user_data: region.userData } : {}),
+          ...(input.userData ?? region.userData
+            ? { user_data: input.userData ?? region.userData }
+            : {}),
           ...(region.vpcUuid ? { vpc_uuid: region.vpcUuid } : {}),
           ...(region.ipv6 ? { ipv6: true } : {}),
           ...(region.monitoring ? { monitoring: true } : {}),

@@ -1,5 +1,12 @@
 # @absolutejs/deploy changelog
 
+## 0.16.0 — 2026-07-14
+
+- Allows each normalized infrastructure provision request to supply its own
+  bootstrap user-data payload. Region defaults remain supported, while control
+  planes can mint host-specific Bun agent configuration at provisioning time
+  across DigitalOcean, GCP, Hetzner, Linode, and Vultr.
+
 ## 0.15.0 — 2026-07-14
 
 Completes the normalized VPS fleet-provider matrix.

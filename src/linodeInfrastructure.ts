@@ -148,8 +148,8 @@ export const createLinodeInfrastructureProvider = (
           root_pass: rootPassword(),
           tags: [tag],
           type: region.type,
-          ...(region.userData
-            ? { stackscript_data: { user_data: region.userData } }
+          ...(input.userData ?? region.userData
+            ? { stackscript_data: { user_data: input.userData ?? region.userData } }
             : {}),
         },
       );

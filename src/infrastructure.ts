@@ -27,6 +27,8 @@ export type ProvisionInfrastructureNode = {
   idempotencyKey: string;
   name: string;
   region?: string;
+  /** Per-host bootstrap configuration, overriding the region default. */
+  userData?: string;
 };
 
 export type InfrastructureProvider = {

@@ -214,7 +214,12 @@ export const createGcpInfrastructureProvider = (
       if (!zone)
         throw new GcpInfrastructureError("No configured GCP zone is available");
       await request({
-        data: { name: input.name },
+        data: {
+          name: input.name,
+          ...(input.userData
+            ? { metadata: { items: [{ key: "startup-script", value: input.userData }] } }
+            : {}),
+        },
         method: "POST",
         url: `${COMPUTE_BASE_URL}/projects/${encodeURIComponent(options.projectId)}/zones/${encodeURIComponent(zone)}/instances?requestId=${encodeURIComponent(input.idempotencyKey)}&sourceInstanceTemplate=${encodeURIComponent(normalizeTemplate(options.projectId, options.instanceTemplate))}`,
       });

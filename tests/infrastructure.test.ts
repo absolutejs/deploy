@@ -92,6 +92,7 @@ describe("infrastructure provider contract", () => {
     const created = await provider.provisionNode({
       idempotencyKey: crypto.randomUUID(),
       name: "absolutejs-node-new",
+      userData: "#cloud-config\n",
     });
     expect(created).toMatchObject({
       id: "digitalocean:99",
@@ -101,6 +102,7 @@ describe("infrastructure provider contract", () => {
     expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
       region: "sfo3",
       tags: ["absolutejs-paas-node"],
+      user_data: "#cloud-config\n",
     });
   });
 
@@ -148,11 +150,17 @@ describe("infrastructure provider contract", () => {
     const created = await provider.provisionNode({
       idempotencyKey: "11111111-1111-4111-8111-111111111111",
       name: "node-west",
+      userData: "#!/bin/sh\n",
     });
     expect(created.region).toBe("us-west1");
     expect(requests.at(-1)?.url).toContain(
       "sourceInstanceTemplate=projects%2Fpaas%2Fglobal%2FinstanceTemplates%2Fnode-v1",
     );
+    expect(requests.at(-1)?.data).toMatchObject({
+      metadata: {
+        items: [{ key: "startup-script", value: "#!/bin/sh\n" }],
+      },
+    });
   });
 
   test("signs GCP service requests with an audience identity token", async () => {

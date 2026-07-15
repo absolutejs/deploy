@@ -137,7 +137,9 @@ export const createHetznerInfrastructureProvider = (
           ssh_keys: [...region.sshKeys],
           start_after_create: true,
           ...(region.networkId ? { networks: [region.networkId] } : {}),
-          ...(region.userData ? { user_data: region.userData } : {}),
+          ...(input.userData ?? region.userData
+            ? { user_data: input.userData ?? region.userData }
+            : {}),
         },
       );
 
