@@ -217,7 +217,7 @@ export const createGcpInfrastructureProvider = (
         data: {
           name: input.name,
           ...(input.userData
-            ? { metadata: { items: [{ key: "startup-script", value: input.userData }] } }
+            ? { metadata: { items: [{ key: "user-data", value: input.userData }] } }
             : {}),
         },
         method: "POST",

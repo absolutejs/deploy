@@ -150,7 +150,7 @@ describe("infrastructure provider contract", () => {
     const created = await provider.provisionNode({
       idempotencyKey: "11111111-1111-4111-8111-111111111111",
       name: "node-west",
-      userData: "#!/bin/sh\n",
+      userData: "#cloud-config\n",
     });
     expect(created.region).toBe("us-west1");
     expect(requests.at(-1)?.url).toContain(
@@ -158,7 +158,7 @@ describe("infrastructure provider contract", () => {
     );
     expect(requests.at(-1)?.data).toMatchObject({
       metadata: {
-        items: [{ key: "startup-script", value: "#!/bin/sh\n" }],
+        items: [{ key: "user-data", value: "#cloud-config\n" }],
       },
     });
   });

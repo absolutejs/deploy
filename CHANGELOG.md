@@ -1,5 +1,10 @@
 # @absolutejs/deploy changelog
 
+## 0.16.1 — 2026-07-14
+
+- Sends GCP provision-time cloud-init through the Compute Engine `user-data`
+  metadata key instead of treating it as a shell `startup-script`.
+
 ## 0.16.0 — 2026-07-14
 
 - Allows each normalized infrastructure provision request to supply its own
