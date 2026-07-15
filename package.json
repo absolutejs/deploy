@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
@@ -30,7 +30,7 @@
     "release"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/infrastructure.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/gcp.ts src/hetzner.ts src/linode.ts src/vultr.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/infrastructure.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/gcp.ts src/hetzner.ts src/hetznerInfrastructure.ts src/linode.ts src/linodeInfrastructure.ts src/vultr.ts src/vultrInfrastructure.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -79,6 +79,11 @@
       "import": "./dist/hetzner.js",
       "default": "./dist/hetzner.js"
     },
+    "./hetzner-infrastructure": {
+      "types": "./dist/hetznerInfrastructure.d.ts",
+      "import": "./dist/hetznerInfrastructure.js",
+      "default": "./dist/hetznerInfrastructure.js"
+    },
     "./dns": {
       "types": "./dist/dns.d.ts",
       "import": "./dist/dns.js",
@@ -104,10 +109,20 @@
       "import": "./dist/linode.js",
       "default": "./dist/linode.js"
     },
+    "./linode-infrastructure": {
+      "types": "./dist/linodeInfrastructure.d.ts",
+      "import": "./dist/linodeInfrastructure.js",
+      "default": "./dist/linodeInfrastructure.js"
+    },
     "./vultr": {
       "types": "./dist/vultr.d.ts",
       "import": "./dist/vultr.js",
       "default": "./dist/vultr.js"
+    },
+    "./vultr-infrastructure": {
+      "types": "./dist/vultrInfrastructure.d.ts",
+      "import": "./dist/vultrInfrastructure.js",
+      "default": "./dist/vultrInfrastructure.js"
     },
     "./digitalocean-dns": {
       "types": "./dist/digitaloceanDns.d.ts",

@@ -60,6 +60,7 @@ export type HetznerServer = {
 	server_type?: { name: string };
 	datacenter?: { location: { name: string } };
 	labels?: Record<string, string>;
+	private_net?: Array<{ ip: string; network: number }>;
 };
 
 export type HetznerTargetOptions = {

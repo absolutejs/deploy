@@ -1,5 +1,21 @@
 # @absolutejs/deploy changelog
 
+## 0.15.0 — 2026-07-14
+
+Completes the normalized VPS fleet-provider matrix.
+
+### Added
+
+- `createHetznerInfrastructureProvider`
+- `createLinodeInfrastructureProvider`
+- `createVultrInfrastructureProvider`
+
+Each adapter implements the same capability, inventory, get, idempotent
+provision, regional placement, node-agent discovery, and termination contract
+as DigitalOcean and GCP. Existing deploy targets remain unchanged; control
+planes can now switch among all five compute providers without owning a cloud
+API or changing fleet orchestration.
+
 ## 0.14.1 — 2026-07-14
 
 - Adds `createGcpIdentityTokenRequest`, keeping Google-signed node-agent and

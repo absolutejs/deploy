@@ -8,7 +8,13 @@ import {
   createGcpIdentityTokenRequest,
   createGcpInfrastructureProvider,
 } from "../src/gcp";
+import type { HetznerClientLike, HetznerServer } from "../src/hetzner";
+import { createHetznerInfrastructureProvider } from "../src/hetznerInfrastructure";
 import type { InfrastructureProvider } from "../src/infrastructure";
+import type { LinodeClientLike, LinodeInstance } from "../src/linode";
+import { createLinodeInfrastructureProvider } from "../src/linodeInfrastructure";
+import type { VultrClientLike, VultrInstance } from "../src/vultr";
+import { createVultrInfrastructureProvider } from "../src/vultrInfrastructure";
 
 const assertProviderContract = (provider: InfrastructureProvider) => {
   expect(provider.name.length).toBeGreaterThan(0);
@@ -165,5 +171,118 @@ describe("infrastructure provider contract", () => {
     });
     await request("node-agent", "https://node.internal/health", { method: "GET" });
     expect(calls[0]?.init?.headers).toMatchObject({ authorization: "Bearer node-agent" });
+  });
+
+  test("normalizes and provisions Hetzner fleet nodes", async () => {
+    const existing: HetznerServer = {
+      datacenter: { location: { name: "nbg1" } },
+      id: 41,
+      name: "existing",
+      private_net: [{ ip: "10.0.0.4", network: 1 }],
+      public_net: { ipv4: { blocked: false, id: 1, ip: "203.0.113.4" }, ipv6: null },
+      status: "running",
+    };
+    const calls: Array<{ body?: unknown; method: string; path: string }> = [];
+    const client: HetznerClientLike = {
+      request: async <T>(
+        method: "GET" | "POST" | "DELETE",
+        path: string,
+        body?: unknown,
+      ): Promise<T> => {
+        calls.push({ body, method, path });
+        if (path.includes("?name=")) return { servers: [] } as T;
+        if (method === "POST")
+          return {
+            server: { ...existing, datacenter: { location: { name: "ash" } }, id: 42, name: "new", status: "initializing" },
+          } as T;
+        return { servers: [existing] } as T;
+      },
+    };
+    const provider = createHetznerInfrastructureProvider({
+      agent: { preferPrivateNetwork: true },
+      client,
+      regions: [
+        { image: "ubuntu-24.04", region: "nbg1", serverType: "cx22", sshKeys: [1] },
+        { image: "ubuntu-24.04", region: "ash", serverType: "cx22", sshKeys: [1] },
+      ],
+    });
+    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.4:8081/" }, id: "hetzner:41" });
+    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "hetzner:42", region: "ash", state: "pending" });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ location: "ash", labels: { "absolutejs-role": "absolutejs-paas-node" } });
+  });
+
+  test("normalizes and provisions Linode fleet nodes", async () => {
+    const existing: LinodeInstance = {
+      id: 51,
+      ipv4: ["203.0.113.5", "10.0.0.5"],
+      label: "existing",
+      region: "us-east",
+      status: "running",
+      tags: ["absolutejs-paas-node"],
+    };
+    const calls: Array<{ body?: unknown; method: string; path: string }> = [];
+    const client: LinodeClientLike = {
+      request: async <T>(
+        method: "GET" | "POST" | "DELETE",
+        path: string,
+        body?: unknown,
+      ): Promise<T> => {
+        calls.push({ body, method, path });
+        if (method === "POST")
+          return { ...existing, id: 52, label: "new", region: "us-west", status: "provisioning" } as T;
+        return { data: path.includes("tag=") ? [existing] : [] } as T;
+      },
+    };
+    const provider = createLinodeInfrastructureProvider({
+      agent: { preferPrivateNetwork: true },
+      client,
+      regions: [
+        { image: "linode/ubuntu24.04", region: "us-east", sshKeys: ["key"], type: "g6-nanode-1" },
+        { image: "linode/ubuntu24.04", region: "us-west", sshKeys: ["key"], type: "g6-nanode-1" },
+      ],
+    });
+    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.5:8081/" }, id: "linode:51" });
+    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "linode:52", region: "us-west", state: "pending" });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ private_ip: true, region: "us-west" });
+  });
+
+  test("normalizes and provisions Vultr fleet nodes", async () => {
+    const existing: VultrInstance = {
+      id: "11111111-1111-4111-8111-111111111111",
+      internal_ip: "10.0.0.6",
+      label: "existing",
+      main_ip: "203.0.113.6",
+      power_status: "running",
+      region: "ewr",
+      status: "active",
+      tags: ["absolutejs-paas-node"],
+    };
+    const calls: Array<{ body?: unknown; method: string; path: string }> = [];
+    const client: VultrClientLike = {
+      request: async <T>(
+        method: "GET" | "POST" | "DELETE" | "PATCH",
+        path: string,
+        body?: unknown,
+      ): Promise<T> => {
+        calls.push({ body, method, path });
+        if (path.includes("label=")) return { instances: [] } as T;
+        if (method === "POST")
+          return {
+            instance: { ...existing, id: "22222222-2222-4222-8222-222222222222", label: "new", region: "lax", status: "pending" },
+          } as T;
+        return { instances: [existing] } as T;
+      },
+    };
+    const provider = createVultrInfrastructureProvider({
+      agent: { preferPrivateNetwork: true },
+      client,
+      regions: [
+        { osId: 2284, plan: "vc2-1c-1gb", region: "ewr", sshKeys: ["key"] },
+        { osId: 2284, plan: "vc2-1c-1gb", region: "lax", sshKeys: ["key"] },
+      ],
+    });
+    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.6:8081/" }, id: "vultr:11111111-1111-4111-8111-111111111111" });
+    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "vultr:22222222-2222-4222-8222-222222222222", region: "lax", state: "pending" });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ region: "lax", tags: ["absolutejs-paas-node"] });
   });
 });

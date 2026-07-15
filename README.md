@@ -42,12 +42,18 @@ await provider.provisionNode({
 });
 ```
 
-The same contract is implemented by `createGcpInfrastructureProvider` from
-`@absolutejs/deploy/gcp`; GCP uses Application Default Credentials and an
-immutable instance template. The contract exposes declared capabilities,
-normalized node identity/state/address data, list/get/provision/terminate,
-and regional placement. Application deployment, draining, migration, and edge
-cutover remain higher-level orchestration concerns.
+The same contract is implemented by GCP, Hetzner, Linode, and Vultr adapters:
+
+- `@absolutejs/deploy/gcp`
+- `@absolutejs/deploy/hetzner-infrastructure`
+- `@absolutejs/deploy/linode-infrastructure`
+- `@absolutejs/deploy/vultr-infrastructure`
+
+GCP uses Application Default Credentials and an immutable instance template.
+Every adapter exposes declared capabilities, normalized node identity/state/
+address data, list/get/provision/terminate, and regional placement. Application
+deployment, draining, migration, and edge cutover remain higher-level
+orchestration concerns.
 
 ```ts
 import {
