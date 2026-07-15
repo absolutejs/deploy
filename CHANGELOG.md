@@ -1,5 +1,28 @@
 # @absolutejs/deploy changelog
 
+## 0.14.0 — 2026-07-14
+
+Provider-neutral compute fleet lifecycle for control planes.
+
+### Added
+
+- **`InfrastructureProvider`** in `@absolutejs/deploy/infrastructure` defines
+  normalized capabilities and node inventory plus get, provision, and
+  terminate operations. Application deployment, draining, migration, and edge
+  cutover deliberately remain orchestration above this compute boundary.
+- **`createDigitalOceanInfrastructureProvider`** lives beside the existing
+  DigitalOcean target and client. It inventories a tagged fleet, normalizes
+  public/private addressing and node-agent discovery, places new droplets in
+  the least-populated configured region, reuses names idempotently, and
+  terminates by bounded provider node id.
+- **`createGcpInfrastructureProvider`** in `@absolutejs/deploy/gcp` uses
+  Application Default Credentials, labeled Compute Engine inventory,
+  immutable instance templates, regional least-populated placement, GCP
+  request IDs, and normalized node-agent metadata.
+
+All compute-provider implementations now live in `@absolutejs/deploy`; host
+applications consume the shared contract instead of owning cloud APIs.
+
 ## 0.13.0 — 2026-07-14
 
 Delegated DNS-01 support for hosted custom domains.

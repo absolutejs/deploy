@@ -12,6 +12,43 @@ atomically, `rollback(releaseId)` re-points the symlink and restarts.
 Zero `ssh2` / `node-ssh` dependency — `sshTarget` shells out to the system
 `ssh` / `rsync` binaries that already ship on Mac, Linux, and WSL.
 
+## Infrastructure providers (0.14.0)
+
+Control planes use the normalized `InfrastructureProvider` contract from
+`@absolutejs/deploy/infrastructure`. Cloud inventory and lifecycle adapters
+live in this package beside their deploy targets so providers never become
+scattered across host applications.
+
+```ts
+import { createDigitalOceanInfrastructureProvider } from '@absolutejs/deploy/digitalocean-infrastructure';
+
+const provider = createDigitalOceanInfrastructureProvider({
+  token: process.env.DIGITALOCEAN_TOKEN!,
+  tag: 'absolutejs-paas-node',
+  regions: [{
+    region: 'nyc3',
+    size: 's-2vcpu-4gb',
+    image: 'ubuntu-24-04-x64',
+    sshKeys: [process.env.DIGITALOCEAN_SSH_KEY!],
+    userData: process.env.ABSOLUTEJS_NODE_CLOUD_INIT,
+  }],
+  agent: { preferPrivateNetwork: true, port: 8081 },
+});
+
+await provider.listNodes();
+await provider.provisionNode({
+  idempotencyKey: crypto.randomUUID(),
+  name: 'absolutejs-node-01',
+});
+```
+
+The same contract is implemented by `createGcpInfrastructureProvider` from
+`@absolutejs/deploy/gcp`; GCP uses Application Default Credentials and an
+immutable instance template. The contract exposes declared capabilities,
+normalized node identity/state/address data, list/get/provision/terminate,
+and regional placement. Application deployment, draining, migration, and edge
+cutover remain higher-level orchestration concerns.
+
 ```ts
 import {
   createDeployer,
