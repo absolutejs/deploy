@@ -1,5 +1,11 @@
 # @absolutejs/deploy changelog
 
+## 0.14.1 — 2026-07-14
+
+- Adds `createGcpIdentityTokenRequest`, keeping Google-signed node-agent and
+  edge-service authentication beside the GCP provider instead of leaking a
+  Google auth dependency into consuming control planes.
+
 ## 0.14.0 — 2026-07-14
 
 Provider-neutral compute fleet lifecycle for control planes.

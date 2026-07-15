@@ -4,7 +4,10 @@ import {
   type DigitalOceanDroplet,
 } from "../src/digitalocean";
 import { createDigitalOceanInfrastructureProvider } from "../src/digitaloceanInfrastructure";
-import { createGcpInfrastructureProvider } from "../src/gcp";
+import {
+  createGcpIdentityTokenRequest,
+  createGcpInfrastructureProvider,
+} from "../src/gcp";
 import type { InfrastructureProvider } from "../src/infrastructure";
 
 const assertProviderContract = (provider: InfrastructureProvider) => {
@@ -144,5 +147,23 @@ describe("infrastructure provider contract", () => {
     expect(requests.at(-1)?.url).toContain(
       "sourceInstanceTemplate=projects%2Fpaas%2Fglobal%2FinstanceTemplates%2Fnode-v1",
     );
+  });
+
+  test("signs GCP service requests with an audience identity token", async () => {
+    const calls: Array<{ init?: RequestInit; url: string }> = [];
+    const request = createGcpIdentityTokenRequest({
+      auth: {
+        getIdTokenClient: async (audience: string) => ({
+          getRequestHeaders: async () => new Headers({ authorization: `Bearer ${audience}` }),
+        }),
+      },
+      fetch: (async (url: string, init?: RequestInit) => {
+        calls.push({ init, url });
+
+        return Response.json({ ok: true });
+      }) as typeof fetch,
+    });
+    await request("node-agent", "https://node.internal/health", { method: "GET" });
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: "Bearer node-agent" });
   });
 });

@@ -26,6 +26,38 @@ export type GcpComputeRequest = <T>(options: {
   url: string;
 }) => Promise<{ data: T }>;
 
+export type GcpIdentityTokenRequest = (
+  audience: string,
+  url: string,
+  init: NonNullable<Parameters<typeof fetch>[1]>,
+) => Promise<Response>;
+
+export type GcpIdentityAuth = {
+  getIdTokenClient: (audience: string) => Promise<{
+    getRequestHeaders: (url: string) => Promise<Headers>;
+  }>;
+};
+
+export const createGcpIdentityTokenRequest = (
+  dependencies: {
+    auth?: GcpIdentityAuth;
+    fetch?: typeof fetch;
+  } = {},
+): GcpIdentityTokenRequest => {
+  const auth: GcpIdentityAuth = dependencies.auth ?? new GoogleAuth();
+  const request = dependencies.fetch ?? fetch;
+
+  return async (audience, url, init) => {
+    const client = await auth.getIdTokenClient(audience);
+    const headers = await client.getRequestHeaders(url);
+
+    return request(url, {
+      ...init,
+      headers: { ...Object.fromEntries(headers), ...init.headers },
+    });
+  };
+};
+
 export type GcpInfrastructureProviderOptions = {
   agentAudience?: string;
   agentAudienceMetadataKey?: string;
