@@ -55,6 +55,46 @@ address data, list/get/provision/terminate, and regional placement. Application
 deployment, draining, migration, and edge cutover remain higher-level
 orchestration concerns.
 
+## Global edge ingress (0.17.0)
+
+`EdgeIngressProvider` is the shared lifecycle for a public global ingress over
+regional edge pools. It normalizes the listener, backend health check, ordered
+regional failover priority, provider resource references, addresses, state,
+and idempotent removal. Provider resource construction stays here instead of
+leaking DigitalOcean or GCP APIs into a control plane.
+
+```ts
+import { createDigitalOceanIngressProvider } from '@absolutejs/deploy/digitalocean-ingress';
+
+const ingress = createDigitalOceanIngressProvider({
+  token: process.env.DIGITALOCEAN_TOKEN!,
+});
+
+await ingress.reconcileIngress({
+  name: 'absolutejs-edge',
+  idempotencyKey: crypto.randomUUID(),
+  backends: [
+    { region: 'nyc3', resourceId: 'regional-lb-east', priority: 1 },
+    { region: 'sfo3', resourceId: 'regional-lb-west', priority: 2 },
+  ],
+  listener: {
+    port: 443,
+    protocol: 'https',
+    targetPort: 443,
+    tlsPassthrough: true,
+  },
+  healthCheck: { protocol: 'tcp', port: 443 },
+});
+```
+
+DigitalOcean uses a Global Load Balancer whose backends are regional load
+balancer UUIDs. GCP uses a global external TCP proxy whose backends are
+provider-native instance-group or NEG self-links; the adapter also owns its
+health check, backend service, proxy, Premium address, and forwarding rule.
+Both preserve TLS termination at the regional edge and wait for provider
+operations before advancing dependent resources. Creating an adapter does not
+provision anything; only `reconcileIngress()` mutates provider state.
+
 ```ts
 import {
   createDeployer,

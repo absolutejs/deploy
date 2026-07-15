@@ -43,3 +43,18 @@ export type {
 	VerifySpec,
 } from './deployer';
 export { createDeployer, defaultBunPipeline } from './deployer';
+
+export type {
+	EdgeIngress,
+	EdgeIngressBackend,
+	EdgeIngressCapabilities,
+	EdgeIngressProtocol,
+	EdgeIngressProvider,
+	EdgeIngressSpec,
+	EdgeIngressState,
+} from './edgeIngress';
+export {
+	EdgeIngressValidationError,
+	normalizedEdgeIngressBackends,
+	validateEdgeIngressSpec,
+} from './edgeIngress';

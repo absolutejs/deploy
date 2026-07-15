@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
@@ -30,7 +30,7 @@
     "release"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/infrastructure.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/gcp.ts src/hetzner.ts src/hetznerInfrastructure.ts src/linode.ts src/linodeInfrastructure.ts src/vultr.ts src/vultrInfrastructure.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/infrastructure.ts src/edgeIngress.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/digitaloceanIngress.ts src/gcp.ts src/gcpIngress.ts src/hetzner.ts src/hetznerInfrastructure.ts src/linode.ts src/linodeInfrastructure.ts src/vultr.ts src/vultrInfrastructure.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -69,10 +69,25 @@
       "import": "./dist/infrastructure.js",
       "default": "./dist/infrastructure.js"
     },
+    "./edge-ingress": {
+      "types": "./dist/edgeIngress.d.ts",
+      "import": "./dist/edgeIngress.js",
+      "default": "./dist/edgeIngress.js"
+    },
+    "./digitalocean-ingress": {
+      "types": "./dist/digitaloceanIngress.d.ts",
+      "import": "./dist/digitaloceanIngress.js",
+      "default": "./dist/digitaloceanIngress.js"
+    },
     "./gcp": {
       "types": "./dist/gcp.d.ts",
       "import": "./dist/gcp.js",
       "default": "./dist/gcp.js"
+    },
+    "./gcp-ingress": {
+      "types": "./dist/gcpIngress.d.ts",
+      "import": "./dist/gcpIngress.js",
+      "default": "./dist/gcpIngress.js"
     },
     "./hetzner": {
       "types": "./dist/hetzner.d.ts",

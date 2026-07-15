@@ -1,5 +1,24 @@
 # @absolutejs/deploy changelog
 
+## 0.17.0 — 2026-07-14
+
+Adds the provider-neutral global edge ingress lifecycle.
+
+- `EdgeIngressProvider` owns inspect, idempotent reconcile, and removal above
+  regional provider-native backend pools. Desired listeners, health checks,
+  ordered regional priorities, and TLS passthrough are normalized.
+- `createDigitalOceanIngressProvider` reconciles a DigitalOcean Global Load
+  Balancer over regional load balancer targets, including health failover,
+  dual-stack addressing, and drift updates.
+- `createGcpIngressProvider` reconciles a global external TCP proxy load
+  balancer over regional instance-group or NEG self-links. It owns the health
+  check, backend service, target proxy, Premium static address, forwarding
+  rule, operation waiting, drift repair, and dependency-ordered teardown.
+
+Provider calls remain injectable for retry, observability, and testing. This
+package owns provider resource shapes; consuming control planes own desired
+state and authorization.
+
 ## 0.16.1 — 2026-07-14
 
 - Sends GCP provision-time cloud-init through the Compute Engine `user-data`
