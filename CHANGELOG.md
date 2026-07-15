@@ -1,5 +1,20 @@
 # @absolutejs/deploy changelog
 
+## 0.18.0 — 2026-07-15
+
+Adds the provider-neutral immutable release-artifact boundary used for streamed
+first deployment to fleet hosts.
+
+- `createReleaseArtifact` packages a Bun project into a temporary `.tgz` with
+  an explicit release id, exclusions, byte count, SHA-256 digest, and cleanup.
+- `receiveReleaseArtifact` streams a bounded upload to disk and rejects size or
+  digest drift without retaining a partial file.
+- `extractReleaseArtifact` rejects traversal, links, and special archive
+  entries before extraction, then requires a root `package.json`.
+
+These primitives own portable artifact integrity; control planes continue to
+own authorization, durable deployment state, host choice, and edge cutover.
+
 ## 0.17.0 — 2026-07-14
 
 Adds the provider-neutral global edge ingress lifecycle.

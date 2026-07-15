@@ -544,6 +544,28 @@ bun run my-deploy-script.ts
 
 The first run creates `/srv/<appName>/releases/<id>/`, drops a systemd unit at `/etc/systemd/system/<appName>.service` (if you're using `systemdManager`), starts the service, and probes. Subsequent runs just add a new release dir and swap the symlink.
 
+## Streamed release artifacts
+
+Control planes that activate a release through a remote host agent can use the
+`@absolutejs/deploy/release-artifact` boundary instead of inventing archive and
+integrity handling:
+
+```ts
+const artifact = await createReleaseArtifact({
+  sourceRoot: workspace,
+  exclude: ["node_modules", "build", ".git"],
+});
+
+await upload(artifact.file.stream(), artifact.metadata);
+await artifact.dispose();
+```
+
+`receiveReleaseArtifact` streams a bounded body to disk and verifies its exact
+byte count and SHA-256 digest. `extractReleaseArtifact` rejects traversal,
+links, and special entries before extracting a project with a root
+`package.json`. Authorization, durable state, target selection, activation,
+and traffic cutover remain control-plane responsibilities.
+
 ## Provider adapters (0.8.0)
 
 Compute (`Target` via `createCloudTarget`):

@@ -45,6 +45,17 @@ export type {
 export { createDeployer, defaultBunPipeline } from './deployer';
 
 export type {
+	CreatedReleaseArtifact,
+	ReleaseArtifactMetadata,
+} from './releaseArtifact';
+export {
+	createReleaseArtifact,
+	extractReleaseArtifact,
+	receiveReleaseArtifact,
+	ReleaseArtifactError,
+} from './releaseArtifact';
+
+export type {
 	EdgeIngress,
 	EdgeIngressBackend,
 	EdgeIngressCapabilities,
