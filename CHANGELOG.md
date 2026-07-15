@@ -1,5 +1,25 @@
 # @absolutejs/deploy changelog
 
+## 0.19.0 — 2026-07-15
+
+Adds a durable, transport-neutral preview lifecycle for control planes that
+stream immutable release artifacts to fleet agents.
+
+- `createManagedPreviewFleet` persists provisioning, running, failed, and
+  deleting states through a caller-supplied store.
+- `create` and `resume` preserve a stable runtime identity while allowing each
+  successful publication to advance to a new immutable release.
+- `teardown` retains a failed record when remote cleanup fails, so reconciliation
+  can retry without losing ownership information.
+- `gc` tears down records at their explicit expiration time and reports
+  per-preview failures without stopping the sweep.
+- Operations for the same preview are serialized in-process. Distributed
+  control planes remain responsible for transactional store-level exclusion.
+
+The package owns lifecycle mechanics only. Artifact creation, authorization,
+placement, host activation, routing, and database persistence stay with the
+consuming control plane.
+
 ## 0.18.0 — 2026-07-15
 
 Adds the provider-neutral immutable release-artifact boundary used for streamed
@@ -146,11 +166,11 @@ release / DNS / target machinery from prior versions.
 ### Added — `@absolutejs/deploy/preview`
 
 - **`createPreviewFleet({ baseDomain, dns?, ipv4?, makeDeployer,
-  stop?, afterTeardown?, store?, ... })`** — tenant-aware fleet that
+stop?, afterTeardown?, store?, ... })`** — tenant-aware fleet that
   composes the existing `Deployer` (release dirs + atomic symlink
   swap + rollback) with a `DnsProvider` and a persistent registry.
 - **`fleet.create({ previewId, commitSha?, annotations?, hostname?
-  })`** — idempotent on `previewId`: existing previews reuse port +
+})`** — idempotent on `previewId`: existing previews reuse port +
   `createdAt`, run a fresh `deployer.deploy()` so PR pushes roll
   forward. New previews allocate from the configured port range
   (default `[3100, 3899]`) and upsert an A record at
@@ -171,7 +191,7 @@ release / DNS / target machinery from prior versions.
 ### Design notes
 
 - Substrate owns fleet bookkeeping (ports, DNS, registry). The
-  caller-supplied `makeDeployer` factory owns *application*
+  caller-supplied `makeDeployer` factory owns _application_
   concerns: target choice, env, processManager, secrets snapshot.
 - DNS is optional. When absent, the fleet returns a hostname + URL
   and the caller is responsible for routing.
@@ -216,7 +236,7 @@ contract stays uniform.
   read — your code sees raw plaintext, the wire sees quoted form.
 - **Synthetic id for delete**: Route 53 deletes require the
   CURRENT record state, not an opaque id. We encode `{ Name, Type,
-  Values, TTL }` as a base64-JSON synthetic id at read/write time
+Values, TTL }` as a base64-JSON synthetic id at read/write time
   so the `DnsProvider.delete(id)` contract works without a second
   round-trip.
 - **Idempotent delete**: "InvalidChangeBatch / not found" errors
@@ -239,15 +259,15 @@ Test count: 193 → 209.
 
 ### Provider matrix at 0.9.0
 
-| Provider | Compute | DNS |
-|----------|---------|-----|
-| DigitalOcean | ✓ | ✓ |
-| Hetzner | ✓ | ✓ |
-| Linode | ✓ | — |
-| Vultr | ✓ | — |
-| Cloudflare | — | ✓ |
-| AWS Route 53 | — | ✓ |
-| Fly Machines | — | — |
+| Provider     | Compute | DNS |
+| ------------ | ------- | --- |
+| DigitalOcean | ✓       | ✓   |
+| Hetzner      | ✓       | ✓   |
+| Linode       | ✓       | —   |
+| Vultr        | ✓       | —   |
+| Cloudflare   | —       | ✓   |
+| AWS Route 53 | —       | ✓   |
+| Fly Machines | —       | —   |
 
 ## 0.8.0 — 2026-05-31
 
@@ -312,15 +332,15 @@ Test count: 156 → 193.
 
 ### Provider matrix at 0.8.0
 
-| Provider | Compute | DNS |
-|----------|---------|-----|
+| Provider     | Compute           | DNS                   |
+| ------------ | ----------------- | --------------------- |
 | DigitalOcean | `/digitalocean` ✓ | `/digitalocean-dns` ✓ |
-| Hetzner | `/hetzner` ✓ | `/hetzner-dns` ✓ |
-| Linode | `/linode` ✓ | — |
-| Vultr | `/vultr` ✓ | — |
-| Cloudflare | — | `/cloudflare` ✓ |
-| Fly Machines | — | — |
-| Route 53 | — | — |
+| Hetzner      | `/hetzner` ✓      | `/hetzner-dns` ✓      |
+| Linode       | `/linode` ✓       | —                     |
+| Vultr        | `/vultr` ✓        | —                     |
+| Cloudflare   | —                 | `/cloudflare` ✓       |
+| Fly Machines | —                 | —                     |
+| Route 53     | —                 | —                     |
 
 ## 0.7.0 — 2026-05-31
 
@@ -361,17 +381,17 @@ open. Composes with `@absolutejs/secrets` via a narrow
 The rotation flow is now one composed call:
 
 ```ts
-await broker.rotate('STRIPE_KEY');                           // @absolutejs/secrets
-await syncSecretsToDeployments(broker, deployments);         // @absolutejs/deploy/env
+await broker.rotate("STRIPE_KEY"); // @absolutejs/secrets
+await syncSecretsToDeployments(broker, deployments); // @absolutejs/deploy/env
 ```
 
 Or, when scoped to only the consumers of one key:
 
 ```ts
-await broker.rotate('STRIPE_KEY');
+await broker.rotate("STRIPE_KEY");
 await syncSecretsToDeployments(
   broker,
-  deploymentsUsing('STRIPE_KEY', deployments)
+  deploymentsUsing("STRIPE_KEY", deployments),
 );
 ```
 
@@ -406,11 +426,11 @@ have it Do The Right Thing.
 Parses a PEM certificate via `node:crypto`'s `X509Certificate` and
 returns operator-shaped metadata:
 
-  - `subjects` — CN + every SAN, deduplicated
-  - `validFrom` / `validTo` — ms since epoch
-  - `daysRemaining` — whole days until `validTo` (negative if expired)
-  - `expired` — convenience boolean
-  - `issuer` — issuer DN string
+- `subjects` — CN + every SAN, deduplicated
+- `validFrom` / `validTo` — ms since epoch
+- `daysRemaining` — whole days until `validTo` (negative if expired)
+- `expired` — convenience boolean
+- `issuer` — issuer DN string
 
 Standalone primitive — fine for status pages, alerts ("cert expires
 in 14 days"), and observability dashboards.
@@ -419,20 +439,20 @@ in 14 days"), and observability dashboards.
 
 Conditional renewal driver. Extends `IssueCertificateOptions` with:
 
-  - `currentCertificatePem?` — when present, the cert's `validTo`
-    decides; when absent, always issues (first-time path).
-  - `renewWhenDaysRemaining?` — re-issue threshold (default 30 days,
-    matching certbot's standard schedule on Let's Encrypt's 90-day
-    certs — leaves a 60-day error budget).
-  - `force?` — bypass the freshness check (default false).
-  - `now?` — clock override for tests.
+- `currentCertificatePem?` — when present, the cert's `validTo`
+  decides; when absent, always issues (first-time path).
+- `renewWhenDaysRemaining?` — re-issue threshold (default 30 days,
+  matching certbot's standard schedule on Let's Encrypt's 90-day
+  certs — leaves a 60-day error budget).
+- `force?` — bypass the freshness check (default false).
+- `now?` — clock override for tests.
 
 Returns a discriminated `RenewalResult`:
 
-  - `{ renewed: true, certificate, reason }` where `reason` is one of
-    `'forced'` / `'no-current-cert'` / `'expiring-soon'`.
-  - `{ renewed: false, reason: 'still-fresh', inspection }` — cheap
-    no-op when the cert has > threshold days left.
+- `{ renewed: true, certificate, reason }` where `reason` is one of
+  `'forced'` / `'no-current-cert'` / `'expiring-soon'`.
+- `{ renewed: false, reason: 'still-fresh', inspection }` — cheap
+  no-op when the cert has > threshold days left.
 
 Idempotent: a fresh cert returns `{ renewed: false }` after one PEM
 parse, zero network IO. Pair with `installCertificateOnTarget` to
@@ -530,7 +550,7 @@ dependencies — RFC 8555 implemented directly against Bun's
   command. Default paths: `/etc/ssl/<domain>/{fullchain,privkey}.pem`,
   mode `600`.
 - **Account reuse** — `generateAccountKey() / exportAccount() /
-  importAccount()` round-trip the ECDSA P-256 keypair + `kid` so
+importAccount()` round-trip the ECDSA P-256 keypair + `kid` so
   cert renewals reuse the same account (cheaper, avoids Let's
   Encrypt's account-creation rate limit).
 - **Constants** — `LETSENCRYPT_PRODUCTION` and `LETSENCRYPT_STAGING`
@@ -579,7 +599,7 @@ closes that loop.
   (`A` / `AAAA` / `CNAME` / `TXT` / `MX`) plus the desired-state
   shape used by `upsert`.
 - **`ensureDnsForTarget(provider, { name, target, ttl?, proxied?,
-  comment? })`** — the canonical "point this hostname at this freshly-
+comment? })`** — the canonical "point this hostname at this freshly-
   provisioned IPv4" entry. Idempotent — calls `provider.upsert()`.
 
 ### Added — `@absolutejs/deploy/cloudflare` adapter
@@ -675,7 +695,7 @@ loop that gates every fresh deploy.
   droplet by name, wait for `status === 'active'` + IPv4, wait for SSH
   readiness, return a `Target` that wraps `sshTarget`. Idempotent: same
   `name` → same droplet, no duplicates. Returns `{ ...Target,
-  dropletId, ipv4, destroy() }`.
+dropletId, ipv4, destroy() }`.
 - **`createDigitalOceanClient(token, options?)`** — fetch-backed default
   client against `api.digitalocean.com/v2`. Authorization via bearer
   token; throws `DigitalOceanError` (with `status` + parsed body) on
@@ -738,8 +758,8 @@ an optional options bag; passing none preserves 0.0.1 behavior.
 - **`deployer.readReleaseMeta(releaseId)`** — read the persisted metadata
   for a specific release. Returns `null` if the release has no meta file.
 - **`ReleaseRecord` type** — `{ releaseId, annotations, status: 'in-progress'
-  | 'completed' | 'failed', failedStep?, completedSteps[], startedAt,
-  endedAt? }`. The shape `readReleaseMeta` returns.
+| 'completed' | 'failed', failedStep?, completedSteps[], startedAt,
+endedAt? }`. The shape `readReleaseMeta` returns.
 
 ### Fixed
 
