@@ -53,6 +53,7 @@ export type CreateManagedPreviewInput<Context> = {
   context: Context;
   runtimeId?: string;
   expiresAt?: number;
+  releaseId?: string;
 };
 
 export type ManagedPreviewFleetOptions<Context, Output> = {
@@ -169,6 +170,9 @@ export const createManagedPreviewFleet = <Context, Output = unknown>(
             ? {}
             : { expiresAt: existing.expiresAt }
           : { expiresAt: input.expiresAt }),
+        ...(input.releaseId === undefined
+          ? {}
+          : { releaseId: input.releaseId }),
       };
       return publish(record);
     });

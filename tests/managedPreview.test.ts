@@ -58,6 +58,32 @@ describe("createManagedPreviewFleet", () => {
     });
   });
 
+  test("publishes a caller-prepared immutable release", async () => {
+    const store = createStore();
+    const fleet = createManagedPreviewFleet<Context, Output>({
+      destroy: async () => undefined,
+      publish: async (record) => {
+        expect(record.releaseId).toBe("prepared-release");
+        const releaseId = record.releaseId;
+        if (!releaseId) throw new Error("prepared release missing");
+        return {
+          releaseId,
+          url: "https://prepared.example.com",
+        };
+      },
+      store,
+    });
+
+    const record = await fleet.create({
+      context: { projectId: "project-1" },
+      previewId: "preview-1",
+      releaseId: "prepared-release",
+    });
+
+    expect(record.releaseId).toBe("prepared-release");
+    expect(record.status).toBe("running");
+  });
+
   test("retains a failed record and resumes with the same runtime identity", async () => {
     const store = createStore();
     let attempts = 0;
