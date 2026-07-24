@@ -1,5 +1,17 @@
 # @absolutejs/deploy changelog
 
+## 0.21.0 — 2026-07-24
+
+Adds a provider-neutral ephemeral infrastructure lifecycle with independently
+observable compute and storage cleanup.
+
+- The DigitalOcean implementation idempotently provisions one Droplet and one
+  encrypted Block Storage volume, rejecting topology drift on reuse.
+- Cleanup is ordered and bounded, and succeeds only after both resources are
+  independently observed absent.
+- The contract deliberately has no remote-command primitive; consuming control
+  planes retain authorization and the immutable host image owns execution.
+
 ## 0.19.0 — 2026-07-15
 
 Adds a durable, transport-neutral preview lifecycle for control planes that
