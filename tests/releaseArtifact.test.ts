@@ -74,6 +74,27 @@ describe("release artifacts", () => {
     expect(await Bun.file(destination).exists()).toBe(false);
   });
 
+  test("receives a reader-only request body stream", async () => {
+    const root = await temporary();
+    const destination = path.join(root, "reader-only.tgz");
+    const contents = "reader-only";
+    const stream = new Blob([contents]).stream();
+    const readerOnly = {
+      getReader: () => stream.getReader(),
+    } as ReadableStream<Uint8Array>;
+
+    await receiveReleaseArtifact({
+      destination,
+      expectedBytes: Buffer.byteLength(contents),
+      expectedSha256: new Bun.CryptoHasher("sha256")
+        .update(contents)
+        .digest("hex"),
+      stream: readerOnly,
+    });
+
+    expect(await readFile(destination, "utf8")).toBe(contents);
+  });
+
   test("rejects link entries before extraction", async () => {
     const root = await temporary();
     const source = path.join(root, "source");
