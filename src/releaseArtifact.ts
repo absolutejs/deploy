@@ -146,7 +146,6 @@ export const receiveReleaseArtifact = async (options: {
     await rm(options.destination, { force: true });
     throw error;
   } finally {
-    reader.releaseLock();
     await writer.end();
   }
   if (

@@ -79,9 +79,10 @@ describe("release artifacts", () => {
     const destination = path.join(root, "reader-only.tgz");
     const contents = "reader-only";
     const stream = new Blob([contents]).stream();
+    const reader = stream.getReader();
     const readerOnly = {
-      getReader: () => stream.getReader(),
-    } as ReadableStream<Uint8Array>;
+      getReader: () => ({ read: () => reader.read() }),
+    } as unknown as ReadableStream<Uint8Array>;
 
     await receiveReleaseArtifact({
       destination,
