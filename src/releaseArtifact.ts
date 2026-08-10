@@ -128,9 +128,12 @@ export const receiveReleaseArtifact = async (options: {
   await mkdir(path.dirname(options.destination), { recursive: true });
   const writer = Bun.file(options.destination).writer();
   const hasher = new Bun.CryptoHasher("sha256");
+  const reader = options.stream.getReader();
   let bytes = 0;
   try {
-    for await (const chunk of options.stream) {
+    while (true) {
+      const { done, value: chunk } = await reader.read();
+      if (done) break;
       bytes += chunk.byteLength;
       if (bytes > options.expectedBytes || bytes > maxBytes)
         throw new ReleaseArtifactError(
@@ -143,6 +146,7 @@ export const receiveReleaseArtifact = async (options: {
     await rm(options.destination, { force: true });
     throw error;
   } finally {
+    reader.releaseLock();
     await writer.end();
   }
   if (

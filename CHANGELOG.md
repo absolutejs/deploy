@@ -1,5 +1,10 @@
 # @absolutejs/deploy changelog
 
+## 0.21.1 — 2026-08-10
+
+- Receives immutable release uploads through the standard `ReadableStream`
+  reader API so Bun request bodies do not require a non-portable async iterator.
+
 ## 0.21.0 — 2026-07-24
 
 Adds a provider-neutral ephemeral infrastructure lifecycle with independently
