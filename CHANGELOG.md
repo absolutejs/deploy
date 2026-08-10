@@ -1,5 +1,11 @@
 # @absolutejs/deploy changelog
 
+## 0.21.2 — 2026-08-10
+
+- Completes Bun HTTP request-body reader compatibility by avoiding the
+  unsupported `releaseLock()` cleanup hook after a fully consumed upload.
+- Covers the reader shape exposed by Bun/Elysia request bodies.
+
 ## 0.21.1 — 2026-08-10
 
 - Receives immutable release uploads through the standard `ReadableStream`

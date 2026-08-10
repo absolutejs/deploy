@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.21.1",
+  "version": "0.21.2",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
