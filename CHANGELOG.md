@@ -1,5 +1,20 @@
 # @absolutejs/deploy changelog
 
+## 0.22.0 — 2026-08-22
+
+Adds the provider-neutral native release registry used by AbsoluteJS mobile
+builds.
+
+- Revalidates the byte count and SHA-256 digest of a local AbsoluteJS Android
+  release before publication and rejects unsigned artifacts by default.
+- Streams immutable AABs and deterministic release records through the
+  structural `@absolutejs/blob` store contract without adding a storage SDK.
+- Promotes named release channels through small atomic pointer objects, with
+  idempotent publication, channel resolution, and rollback to any retained
+  release.
+- Keeps application IDs out of object keys and fails closed on malformed,
+  missing, or drifted stored artifacts.
+
 ## 0.21.2 — 2026-08-10
 
 - Completes Bun HTTP request-body reader compatibility by avoiding the

@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/deploy",
-  "version": "0.21.2",
+  "version": "0.22.0",
   "description": "Generic Bun-project deploy pipeline. A Target (localTarget / sshTarget) is anywhere you can exec + upload — DigitalOcean droplets, Linode, Hetzner, Vultr, your own boxes. Bundled pipeline: prepare → upload → install → build → link → restart → verify. Atomic symlink swap, release history, prune, hooks. SSH shells out to system ssh/rsync — zero ssh2 deps.",
   "repository": {
     "type": "git",
@@ -30,7 +30,7 @@
     "release"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/releaseArtifact.ts src/infrastructure.ts src/ephemeralInfrastructure.ts src/edgeIngress.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/digitaloceanEphemeralInfrastructure.ts src/digitaloceanIngress.ts src/gcp.ts src/gcpIngress.ts src/hetzner.ts src/hetznerInfrastructure.ts src/linode.ts src/linodeInfrastructure.ts src/vultr.ts src/vultrInfrastructure.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts src/managedPreview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/releaseArtifact.ts src/nativeRelease.ts src/infrastructure.ts src/ephemeralInfrastructure.ts src/edgeIngress.ts src/digitalocean.ts src/digitaloceanInfrastructure.ts src/digitaloceanEphemeralInfrastructure.ts src/digitaloceanIngress.ts src/gcp.ts src/gcpIngress.ts src/hetzner.ts src/hetznerInfrastructure.ts src/linode.ts src/linodeInfrastructure.ts src/vultr.ts src/vultrInfrastructure.ts src/dns.ts src/cloudflare.ts src/digitaloceanDns.ts src/hetznerDns.ts src/route53.ts src/tls.ts src/env.ts src/preview.ts src/managedPreview.ts --outdir dist --root src --sourcemap --target=bun && tsc --project tsconfig.build.json",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./**/*.{ts,json,md}\"",
@@ -85,6 +85,11 @@
       "types": "./dist/releaseArtifact.d.ts",
       "import": "./dist/releaseArtifact.js",
       "default": "./dist/releaseArtifact.js"
+    },
+    "./native-release": {
+      "types": "./dist/nativeRelease.d.ts",
+      "import": "./dist/nativeRelease.js",
+      "default": "./dist/nativeRelease.js"
     },
     "./digitalocean-ingress": {
       "types": "./dist/digitaloceanIngress.d.ts",

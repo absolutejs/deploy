@@ -12,6 +12,42 @@ atomically, `rollback(releaseId)` re-points the symlink and restarts.
 Zero `ssh2` / `node-ssh` dependency — `sshTarget` shells out to the system
 `ssh` / `rsync` binaries that already ship on Mac, Linux, and WSL.
 
+## Native application releases (0.22.0)
+
+`@absolutejs/deploy/native-release` publishes the immutable release directory
+created by `absolute mobile build android` through any `@absolutejs/blob`
+adapter. It verifies the local AAB's declared size and SHA-256 digest again,
+requires a signed build by default, and writes the binary only once under its
+content-derived release identity.
+
+```ts
+import { createNativeReleaseRegistry } from '@absolutejs/deploy/native-release';
+import { s3BlobStore } from '@absolutejs/blob/s3';
+
+const store = s3BlobStore({ client, bucket: 'absolute-releases' });
+const releases = createNativeReleaseRegistry({ store });
+
+const published = await releases.publish({
+  releaseRoot:
+    '.absolutejs/mobile/releases/android/amobile_android_<sha256>',
+  channel: 'internal'
+});
+
+await releases.promote({
+  appId: published.record.metadata.appId,
+  platform: 'android',
+  releaseId: published.record.metadata.releaseId,
+  channel: 'production'
+});
+```
+
+Channels are small mutable pointers; release records and AAB bytes are
+immutable. Promoting an older retained release is therefore a rollback without
+rebuilding or copying the binary. Passing `allowUnsigned: true` is required on
+both publication and promotion for intentionally non-publishable local-testing
+artifacts. The registry uses the structural BlobStore shape, so Deploy does not
+take a runtime dependency on `@absolutejs/blob` or a cloud SDK.
+
 ## Infrastructure providers (0.14.0)
 
 Control planes use the normalized `InfrastructureProvider` contract from

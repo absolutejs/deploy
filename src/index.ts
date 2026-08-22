@@ -56,6 +56,23 @@ export {
 } from './releaseArtifact';
 
 export type {
+	AndroidNativeReleaseMetadata,
+	NativeReleaseBlobObject,
+	NativeReleaseBlobStore,
+	NativeReleaseChannel,
+	NativeReleaseMetadata,
+	NativeReleasePublication,
+	NativeReleaseRecord,
+	NativeReleaseRegistry,
+	NativeReleaseRegistryOptions,
+} from './nativeRelease';
+export {
+	createNativeReleaseRegistry,
+	NATIVE_RELEASE_REGISTRY_FORMAT,
+	NativeReleaseRegistryError,
+} from './nativeRelease';
+
+export type {
 	EdgeIngress,
 	EdgeIngressBackend,
 	EdgeIngressCapabilities,
