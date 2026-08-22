@@ -12,99 +12,119 @@
  */
 
 export type {
-	ExecOptions,
-	ExecResult,
-	LocalTargetOptions,
-	SshTargetOptions,
-	Target,
-	UploadOptions,
-} from './targets';
-export { localTarget, sshTarget } from './targets';
+  ExecOptions,
+  ExecResult,
+  LocalTargetOptions,
+  SshTargetOptions,
+  Target,
+  UploadOptions,
+} from "./targets";
+export { localTarget, sshTarget } from "./targets";
 
 export type {
-	BareManagerOptions,
-	ProcessManager,
-	ProcessManagerContext,
-	SystemdManagerOptions,
-} from './processManagers';
-export { bareManager, systemdManager } from './processManagers';
+  BareManagerOptions,
+  ProcessManager,
+  ProcessManagerContext,
+  SystemdManagerOptions,
+} from "./processManagers";
+export { bareManager, systemdManager } from "./processManagers";
 
 export type {
-	DeployContext,
-	DeployHooks,
-	DeployOptions,
-	DeployResult,
-	DeployStep,
-	Deployer,
-	DeployerOptions,
-	ReleaseAnnotations,
-	ReleaseRecord,
-	Source,
-	VerifySpec,
-} from './deployer';
-export { createDeployer, defaultBunPipeline } from './deployer';
+  DeployContext,
+  DeployHooks,
+  DeployOptions,
+  DeployResult,
+  DeployStep,
+  Deployer,
+  DeployerOptions,
+  ReleaseAnnotations,
+  ReleaseRecord,
+  Source,
+  VerifySpec,
+} from "./deployer";
+export { createDeployer, defaultBunPipeline } from "./deployer";
 
 export type {
-	CreatedReleaseArtifact,
-	ReleaseArtifactMetadata,
-} from './releaseArtifact';
+  CreatedReleaseArtifact,
+  ReleaseArtifactMetadata,
+} from "./releaseArtifact";
 export {
-	createReleaseArtifact,
-	extractReleaseArtifact,
-	receiveReleaseArtifact,
-	ReleaseArtifactError,
-} from './releaseArtifact';
+  createReleaseArtifact,
+  extractReleaseArtifact,
+  receiveReleaseArtifact,
+  ReleaseArtifactError,
+} from "./releaseArtifact";
 
 export type {
-	AndroidNativeReleaseMetadata,
-	NativeReleaseBlobObject,
-	NativeReleaseBlobStore,
-	NativeReleaseChannel,
-	NativeReleaseMetadata,
-	NativeReleasePublication,
-	NativeReleaseRecord,
-	NativeReleaseRegistry,
-	NativeReleaseRegistryOptions,
-} from './nativeRelease';
+  AndroidNativeReleaseMetadata,
+  IosNativeReleaseMetadata,
+  NativeReleaseBlobObject,
+  NativeReleaseBlobStore,
+  NativeReleaseChannel,
+  NativeReleaseMetadata,
+  NativeReleasePublication,
+  NativeReleaseRecord,
+  NativeReleaseRegistry,
+  NativeReleaseRegistryOptions,
+} from "./nativeRelease";
 export {
-	createNativeReleaseRegistry,
-	NATIVE_RELEASE_REGISTRY_FORMAT,
-	NativeReleaseRegistryError,
-} from './nativeRelease';
+  createNativeReleaseRegistry,
+  NATIVE_RELEASE_REGISTRY_FORMAT,
+  NativeReleaseRegistryError,
+} from "./nativeRelease";
 
 export type {
-	GooglePlayAuth,
-	GooglePlayBundle,
-	GooglePlayClient,
-	GooglePlayEdit,
-	GooglePlayNativeReleasePublication,
-	GooglePlayNativeReleasePublisher,
-	GooglePlayReleaseIntent,
-	GooglePlayReleasePublisherOptions,
-	GooglePlayReleaseReceipt,
-	GooglePlayReleaseStatus,
-	GooglePlayReleaseTarget,
-	GooglePlayReviewBehavior,
-	GooglePlayTrack,
-	GooglePlayTrackRelease,
-} from './googlePlay';
+  GooglePlayAuth,
+  GooglePlayBundle,
+  GooglePlayClient,
+  GooglePlayEdit,
+  GooglePlayNativeReleasePublication,
+  GooglePlayNativeReleasePublisher,
+  GooglePlayReleaseIntent,
+  GooglePlayReleasePublisherOptions,
+  GooglePlayReleaseReceipt,
+  GooglePlayReleaseStatus,
+  GooglePlayReleaseTarget,
+  GooglePlayReviewBehavior,
+  GooglePlayTrack,
+  GooglePlayTrackRelease,
+} from "./googlePlay";
 export {
-	createGooglePlayClient,
-	createGooglePlayReleasePublisher,
-	GooglePlayReleaseError,
-} from './googlePlay';
+  createGooglePlayClient,
+  createGooglePlayReleasePublisher,
+  GooglePlayReleaseError,
+} from "./googlePlay";
 
 export type {
-	EdgeIngress,
-	EdgeIngressBackend,
-	EdgeIngressCapabilities,
-	EdgeIngressProtocol,
-	EdgeIngressProvider,
-	EdgeIngressSpec,
-	EdgeIngressState,
-} from './edgeIngress';
+  AppStoreConnectAuth,
+  AppStoreConnectBuild,
+  AppStoreConnectBuildUpload,
+  AppStoreConnectClient,
+  AppStoreConnectNativeReleasePublication,
+  AppStoreConnectNativeReleasePublisher,
+  AppStoreConnectReleaseIntent,
+  AppStoreConnectReleasePublisherOptions,
+  AppStoreConnectReleaseReceipt,
+  AppStoreConnectReleaseTarget,
+  AppStoreConnectTestFlightGroup,
+} from "./appStoreConnect";
 export {
-	EdgeIngressValidationError,
-	normalizedEdgeIngressBackends,
-	validateEdgeIngressSpec,
-} from './edgeIngress';
+  createAppStoreConnectClient,
+  createAppStoreConnectReleasePublisher,
+  AppStoreConnectReleaseError,
+} from "./appStoreConnect";
+
+export type {
+  EdgeIngress,
+  EdgeIngressBackend,
+  EdgeIngressCapabilities,
+  EdgeIngressProtocol,
+  EdgeIngressProvider,
+  EdgeIngressSpec,
+  EdgeIngressState,
+} from "./edgeIngress";
+export {
+  EdgeIngressValidationError,
+  normalizedEdgeIngressBackends,
+  validateEdgeIngressSpec,
+} from "./edgeIngress";

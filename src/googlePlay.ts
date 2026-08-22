@@ -4,7 +4,6 @@ import { GoogleAuth } from "google-auth-library";
 import type {
   NativeReleaseBlobStore,
   NativeReleasePublication,
-  NativeReleaseRegistry,
 } from "./nativeRelease";
 
 const ANDROID_PUBLISHER_SCOPE =
@@ -165,7 +164,15 @@ export type GooglePlayReleasePublisherOptions = {
   clock?: () => Date;
   receiptPrefix?: string;
   receiptStore: NativeReleaseBlobStore;
-  registry: NativeReleaseRegistry;
+  registry: {
+    publish: (options: {
+      allowUnsigned?: boolean;
+      channel?: string;
+      releaseRoot: string;
+      signal?: AbortSignal;
+      [key: string]: unknown;
+    }) => Promise<NativeReleasePublication>;
+  };
   target?: GooglePlayReleaseTarget;
 };
 
@@ -719,6 +726,7 @@ export const createGooglePlayReleasePublisher = (
   });
 
   return {
+    ...options.registry,
     prepareAndroidRelease: async (input) => {
       const target = input.googlePlay ?? options.target;
       if (!target) return {};
@@ -773,6 +781,10 @@ export const createGooglePlayReleasePublisher = (
       if (!target) return publication;
       const intent = normalizedTarget(target);
       const metadata = publication.record.metadata;
+      if (metadata.platform !== "android")
+        throw new GooglePlayReleaseError(
+          "Google Play publishing requires an Android App Bundle release",
+        );
       if (!metadata.signed)
         throw new GooglePlayReleaseError(
           "Unsigned Android releases cannot be sent to Google Play",

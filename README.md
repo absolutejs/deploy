@@ -15,29 +15,28 @@ Zero `ssh2` / `node-ssh` dependency — `sshTarget` shells out to the system
 ## Native application releases (0.22.0)
 
 `@absolutejs/deploy/native-release` publishes the immutable release directory
-created by `absolute mobile build android` through any `@absolutejs/blob`
-adapter. It verifies the local AAB's declared size and SHA-256 digest again,
+created by `absolute mobile build android` or `absolute mobile build ios` through
+any `@absolutejs/blob` adapter. It verifies the local AAB/IPA's declared size and SHA-256 digest again,
 requires a signed build by default, and writes the binary only once under its
 content-derived release identity.
 
 ```ts
-import { createNativeReleaseRegistry } from '@absolutejs/deploy/native-release';
-import { s3BlobStore } from '@absolutejs/blob/s3';
+import { createNativeReleaseRegistry } from "@absolutejs/deploy/native-release";
+import { s3BlobStore } from "@absolutejs/blob/s3";
 
-const store = s3BlobStore({ client, bucket: 'absolute-releases' });
+const store = s3BlobStore({ client, bucket: "absolute-releases" });
 const releases = createNativeReleaseRegistry({ store });
 
 const published = await releases.publish({
-  releaseRoot:
-    '.absolutejs/mobile/releases/android/amobile_android_<sha256>',
-  channel: 'internal'
+  releaseRoot: ".absolutejs/mobile/releases/android/amobile_android_<sha256>",
+  channel: "internal",
 });
 
 await releases.promote({
   appId: published.record.metadata.appId,
-  platform: 'android',
+  platform: "android",
   releaseId: published.record.metadata.releaseId,
-  channel: 'production'
+  channel: "production",
 });
 ```
 
@@ -56,11 +55,11 @@ retry to reuse an unexpired edit or resumable upload and to reconcile a commit
 whose successful response was lost.
 
 ```ts
-import { createGooglePlayReleasePublisher } from '@absolutejs/deploy/google-play';
+import { createGooglePlayReleasePublisher } from "@absolutejs/deploy/google-play";
 
 export default createGooglePlayReleasePublisher({
   receiptStore: store,
-  registry: releases
+  registry: releases,
 });
 ```
 
@@ -79,6 +78,40 @@ use `status: 'inProgress'` with `0 < userFraction < 1`; subsequent calls for the
 same release can increase the fraction, halt or resume it, or mark it completed
 without uploading the AAB again.
 
+### App Store Connect and TestFlight distribution (0.24.0)
+
+`@absolutejs/deploy/app-store-connect` uses Apple's current Build Upload API,
+then waits for the processed build and assigns it to named or ID-addressed
+TestFlight groups. It stores only durable Apple resource IDs in retry receipts;
+time-limited upload URLs and API credentials are never persisted.
+
+```ts
+import { createAppStoreConnectReleasePublisher } from "@absolutejs/deploy/app-store-connect";
+import { createGooglePlayReleasePublisher } from "@absolutejs/deploy/google-play";
+
+const google = createGooglePlayReleasePublisher({
+  receiptStore: store,
+  registry: releases,
+});
+
+export default createAppStoreConnectReleasePublisher({
+  auth: {
+    issuerId: process.env.APP_STORE_CONNECT_ISSUER_ID!,
+    keyId: process.env.APP_STORE_CONNECT_KEY_ID!,
+    privateKey: process.env.APP_STORE_CONNECT_PRIVATE_KEY!,
+  },
+  receiptStore: store,
+  registry: google,
+});
+```
+
+Provider wrappers compose, so this one module serves Android and iOS. AbsoluteJS
+asks the adapter for a stable next integer build number before Xcode archives;
+the allocation is tied to the web build, native-source fingerprint, and marketing
+version. Serialize release jobs for one Apple app because App Store Connect has
+no build-number reservation operation. Internal groups need no review. External
+review is submitted only when explicitly requested.
+
 ## Infrastructure providers (0.14.0)
 
 Control planes use the normalized `InfrastructureProvider` contract from
@@ -87,25 +120,27 @@ live in this package beside their deploy targets so providers never become
 scattered across host applications.
 
 ```ts
-import { createDigitalOceanInfrastructureProvider } from '@absolutejs/deploy/digitalocean-infrastructure';
+import { createDigitalOceanInfrastructureProvider } from "@absolutejs/deploy/digitalocean-infrastructure";
 
 const provider = createDigitalOceanInfrastructureProvider({
   token: process.env.DIGITALOCEAN_TOKEN!,
-  tag: 'absolutejs-paas-node',
-  regions: [{
-    region: 'nyc3',
-    size: 's-2vcpu-4gb',
-    image: 'ubuntu-24-04-x64',
-    sshKeys: [process.env.DIGITALOCEAN_SSH_KEY!],
-    userData: process.env.ABSOLUTEJS_NODE_CLOUD_INIT,
-  }],
+  tag: "absolutejs-paas-node",
+  regions: [
+    {
+      region: "nyc3",
+      size: "s-2vcpu-4gb",
+      image: "ubuntu-24-04-x64",
+      sshKeys: [process.env.DIGITALOCEAN_SSH_KEY!],
+      userData: process.env.ABSOLUTEJS_NODE_CLOUD_INIT,
+    },
+  ],
   agent: { preferPrivateNetwork: true, port: 8081 },
 });
 
 await provider.listNodes();
 await provider.provisionNode({
   idempotencyKey: crypto.randomUUID(),
-  name: 'absolutejs-node-01',
+  name: "absolutejs-node-01",
 });
 ```
 
@@ -131,26 +166,26 @@ and idempotent removal. Provider resource construction stays here instead of
 leaking DigitalOcean or GCP APIs into a control plane.
 
 ```ts
-import { createDigitalOceanIngressProvider } from '@absolutejs/deploy/digitalocean-ingress';
+import { createDigitalOceanIngressProvider } from "@absolutejs/deploy/digitalocean-ingress";
 
 const ingress = createDigitalOceanIngressProvider({
   token: process.env.DIGITALOCEAN_TOKEN!,
 });
 
 await ingress.reconcileIngress({
-  name: 'absolutejs-edge',
+  name: "absolutejs-edge",
   idempotencyKey: crypto.randomUUID(),
   backends: [
-    { region: 'nyc3', resourceId: 'regional-lb-east', priority: 1 },
-    { region: 'sfo3', resourceId: 'regional-lb-west', priority: 2 },
+    { region: "nyc3", resourceId: "regional-lb-east", priority: 1 },
+    { region: "sfo3", resourceId: "regional-lb-west", priority: 2 },
   ],
   listener: {
     port: 443,
-    protocol: 'https',
+    protocol: "https",
     targetPort: 443,
     tlsPassthrough: true,
   },
-  healthCheck: { protocol: 'tcp', port: 443 },
+  healthCheck: { protocol: "tcp", port: 443 },
 });
 ```
 
@@ -163,26 +198,25 @@ operations before advancing dependent resources. Creating an adapter does not
 provision anything; only `reconcileIngress()` mutates provider state.
 
 ```ts
-import {
-  createDeployer,
-  sshTarget,
-  systemdManager,
-} from '@absolutejs/deploy';
+import { createDeployer, sshTarget, systemdManager } from "@absolutejs/deploy";
 
 const deployer = createDeployer({
-  appName: 'my-app',
+  appName: "my-app",
   target: sshTarget({
-    host: 'droplet-1.example.com',
-    user: 'deploy',
-    identity: '~/.ssh/id_ed25519',
+    host: "droplet-1.example.com",
+    user: "deploy",
+    identity: "~/.ssh/id_ed25519",
   }),
-  source: { kind: 'directory', root: './' },
-  env: { PORT: '3000', DATABASE_URL: process.env.DATABASE_URL! },
-  processManager: systemdManager({ user: 'deploy' }),
-  verify: { kind: 'http', url: 'http://localhost:3000/health' },
+  source: { kind: "directory", root: "./" },
+  env: { PORT: "3000", DATABASE_URL: process.env.DATABASE_URL! },
+  processManager: systemdManager({ user: "deploy" }),
+  verify: { kind: "http", url: "http://localhost:3000/health" },
   hooks: {
     onStepStart: ({ name, releaseId }) => console.log(`▸ ${releaseId} ${name}`),
-    onLog: (line, stream, step) => process[stream === 'stderr' ? 'stderr' : 'stdout'].write(`[${step}] ${line}\n`),
+    onLog: (line, stream, step) =>
+      process[stream === "stderr" ? "stderr" : "stdout"].write(
+        `[${step}] ${line}\n`,
+      ),
   },
 });
 
@@ -213,9 +247,9 @@ await deployer.stop();
 
 ### Targets
 
-| Adapter | Use |
-|---|---|
-| `localTarget({ root, env? })` | Tests, local-dev, and "deploy to the same box" workflows. |
+| Adapter                                                           | Use                                                                                                                         |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `localTarget({ root, env? })`                                     | Tests, local-dev, and "deploy to the same box" workflows.                                                                   |
 | `sshTarget({ host, user?, port?, identity?, sshFlags?, rsync? })` | Any VPS — DigitalOcean Droplets, Linode, Hetzner, Vultr, Lightsail, Scaleway. Uses the system `ssh` / `rsync` — no npm dep. |
 
 A `Target` is just:
@@ -223,8 +257,15 @@ A `Target` is just:
 ```ts
 type Target = {
   description: string;
-  exec(cmd: string, opts?: { cwd?; env?; timeoutMs?; onLog?; stdin? }): Promise<{ stdout; stderr; exitCode }>;
-  upload(local: string, remote: string, opts?: { exclude?; deleteOrphans? }): Promise<void>;
+  exec(
+    cmd: string,
+    opts?: { cwd?; env?; timeoutMs?; onLog?; stdin? },
+  ): Promise<{ stdout; stderr; exitCode }>;
+  upload(
+    local: string,
+    remote: string,
+    opts?: { exclude?; deleteOrphans? },
+  ): Promise<void>;
   close?(): Promise<void>;
 };
 ```
@@ -233,10 +274,10 @@ If you can implement those two methods, you can deploy through `@absolutejs/depl
 
 ### Process managers
 
-| Manager | What it does |
-|---|---|
-| `bareManager({ command? })` | Default. `nohup bun run start &`, pid file under `/var/lib/<appName>/`, logs to `/var/log/<appName>/`. Zero remote dependency. |
-| `systemdManager({ user?, group?, execStart?, restart?, ... })` | Templated systemd unit pointing at `current/`, `daemon-reload` + `restart`. The production answer for VMs. |
+| Manager                                                        | What it does                                                                                                                   |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `bareManager({ command? })`                                    | Default. `nohup bun run start &`, pid file under `/var/lib/<appName>/`, logs to `/var/log/<appName>/`. Zero remote dependency. |
+| `systemdManager({ user?, group?, execStart?, restart?, ... })` | Templated systemd unit pointing at `current/`, `daemon-reload` + `restart`. The production answer for VMs.                     |
 
 A `ProcessManager` is just `{ reload, stop?, status? }`. Wrap PM2, supervisord, runit, or even `@absolutejs/runtime` — whatever your remote uses.
 
@@ -280,25 +321,25 @@ up a droplet by name; creates it via the v2 API if absent; waits for
 hand to `createDeployer`.
 
 ```ts
-import { createDeployer } from '@absolutejs/deploy';
-import { digitalOceanTarget } from '@absolutejs/deploy/digitalocean';
+import { createDeployer } from "@absolutejs/deploy";
+import { digitalOceanTarget } from "@absolutejs/deploy/digitalocean";
 
 const target = await digitalOceanTarget({
   token: process.env.DO_TOKEN!,
-  name: 'absolutejs-prod-1',          // idempotency key
-  region: 'nyc3',
-  size: 's-1vcpu-1gb',
-  image: 'ubuntu-22-04-x64',
+  name: "absolutejs-prod-1", // idempotency key
+  region: "nyc3",
+  size: "s-1vcpu-1gb",
+  image: "ubuntu-22-04-x64",
   sshKeys: [process.env.DO_KEY_FINGERPRINT!],
-  tags: ['absolutejs'],
-  userData: '#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash',
+  tags: ["absolutejs"],
+  userData: "#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash",
   onLog: (line) => console.log(line),
 });
 
 console.log(`droplet ${target.dropletId} at ${target.ipv4}`);
 
-const deployer = createDeployer({ appName: 'my-app', target });
-await deployer.deploy({ source: { kind: 'directory', path: './build' } });
+const deployer = createDeployer({ appName: "my-app", target });
+await deployer.deploy({ source: { kind: "directory", path: "./build" } });
 
 // Tear it down when you're done:
 await target.destroy();
@@ -325,22 +366,22 @@ mappings underneath. Hetzner-specific differences: locations
 and public-net IPv4/IPv6 are independently toggleable.
 
 ```ts
-import { createDeployer } from '@absolutejs/deploy';
-import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+import { createDeployer } from "@absolutejs/deploy";
+import { hetznerTarget } from "@absolutejs/deploy/hetzner";
 
 const target = await hetznerTarget({
   token: process.env.HETZNER_TOKEN!,
-  name: 'absolutejs-prod-1',
-  location: 'nbg1',
-  serverType: 'cx22',
-  image: 'ubuntu-22.04',
+  name: "absolutejs-prod-1",
+  location: "nbg1",
+  serverType: "cx22",
+  image: "ubuntu-22.04",
   sshKeys: [process.env.HETZNER_KEY_FINGERPRINT!],
-  labels: { env: 'prod', team: 'platform' },
-  userData: '#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash',
+  labels: { env: "prod", team: "platform" },
+  userData: "#!/bin/bash\ncurl -fsSL https://bun.sh/install | bash",
 });
 
-const deployer = createDeployer({ appName: 'my-app', target });
-await deployer.deploy({ source: { kind: 'directory', path: './build' } });
+const deployer = createDeployer({ appName: "my-app", target });
+await deployer.deploy({ source: { kind: "directory", path: "./build" } });
 await target.destroy();
 ```
 
@@ -358,11 +399,13 @@ implements the shared `DnsProvider` contract from
 `@absolutejs/deploy/dns`.
 
 ```ts
-import { hetznerTarget } from '@absolutejs/deploy/hetzner';
-import { cloudflareProvider } from '@absolutejs/deploy/cloudflare';
-import { ensureDnsForTarget } from '@absolutejs/deploy/dns';
+import { hetznerTarget } from "@absolutejs/deploy/hetzner";
+import { cloudflareProvider } from "@absolutejs/deploy/cloudflare";
+import { ensureDnsForTarget } from "@absolutejs/deploy/dns";
 
-const target = await hetznerTarget({ /* … */ });
+const target = await hetznerTarget({
+  /* … */
+});
 const dns = cloudflareProvider({
   token: process.env.CLOUDFLARE_TOKEN!,
   zoneId: process.env.CLOUDFLARE_ZONE_ID!,
@@ -370,7 +413,7 @@ const dns = cloudflareProvider({
 
 // Idempotent — create or update so the A record points at target.ipv4.
 await ensureDnsForTarget(dns, {
-  name: 'api.example.com',
+  name: "api.example.com",
   target,
   ttl: 60,
   proxied: false,
@@ -405,36 +448,38 @@ against Bun's `crypto.subtle`. The audit surface stays in this
 repo.
 
 ```ts
-import { hetznerTarget } from '@absolutejs/deploy/hetzner';
-import { cloudflareProvider } from '@absolutejs/deploy/cloudflare';
-import { ensureDnsForTarget } from '@absolutejs/deploy/dns';
+import { hetznerTarget } from "@absolutejs/deploy/hetzner";
+import { cloudflareProvider } from "@absolutejs/deploy/cloudflare";
+import { ensureDnsForTarget } from "@absolutejs/deploy/dns";
 import {
   issueCertificate,
   installCertificateOnTarget,
   LETSENCRYPT_PRODUCTION,
-} from '@absolutejs/deploy/tls';
+} from "@absolutejs/deploy/tls";
 
-const target = await hetznerTarget({ /* … */ });
+const target = await hetznerTarget({
+  /* … */
+});
 const dns = cloudflareProvider({
   token: process.env.CLOUDFLARE_TOKEN!,
   zoneId: process.env.CLOUDFLARE_ZONE_ID!,
 });
 
 // 1. Point DNS at the box.
-await ensureDnsForTarget(dns, { name: 'api.example.com', target, ttl: 60 });
+await ensureDnsForTarget(dns, { name: "api.example.com", target, ttl: 60 });
 
 // 2. Issue a cert via DNS-01.
 const cert = await issueCertificate({
-  domains: ['api.example.com'],
+  domains: ["api.example.com"],
   dnsProvider: dns,
-  email: 'ops@example.com',
+  email: "ops@example.com",
   directoryUrl: LETSENCRYPT_PRODUCTION,
   onLog: (line) => console.log(line),
 });
 
 // 3. Install on the box.
 await installCertificateOnTarget(target, cert, {
-  reload: 'systemctl reload nginx',
+  reload: "systemctl reload nginx",
 });
 ```
 
@@ -445,9 +490,9 @@ map the provider write while leaving propagation checks on the public name:
 
 ```ts
 const cert = await issueCertificate({
-  domains: ['app.customer.com'],
+  domains: ["app.customer.com"],
   dnsProvider: platformValidationDns,
-  email: 'ops@platform.example',
+  email: "ops@platform.example",
   mapDnsChallengeRecord: ({ domain }) =>
     `${stableDomainToken(domain)}.acme.platform.example`,
 });
@@ -473,43 +518,43 @@ this module handles the deploy-side (push values to remote env
 files, atomic swap, conditional service reload).
 
 ```ts
-import { createSecretBroker, inMemoryAdapter } from '@absolutejs/secrets';
-import { hetznerTarget } from '@absolutejs/deploy/hetzner';
+import { createSecretBroker, inMemoryAdapter } from "@absolutejs/secrets";
+import { hetznerTarget } from "@absolutejs/deploy/hetzner";
 import {
   syncSecretsToDeployments,
   deploymentsUsing,
   type EnvDeployment,
-} from '@absolutejs/deploy/env';
+} from "@absolutejs/deploy/env";
 
 // One source of truth — the SecretBroker. Swap in whatever adapter
 // (env, file, vault, etc.) makes sense for your team.
 const broker = createSecretBroker({
   adapter: inMemoryAdapter({
     initial: {
-      DATABASE_URL: 'postgres://prod-db',
-      STRIPE_KEY: 'sk_live_old',
+      DATABASE_URL: "postgres://prod-db",
+      STRIPE_KEY: "sk_live_old",
     },
   }),
 });
 
 // Each deployed service is one EnvDeployment.
-const api = await hetznerTarget({ name: 'api-1', /* … */ });
-const worker = await hetznerTarget({ name: 'worker-1', /* … */ });
+const api = await hetznerTarget({ name: "api-1" /* … */ });
+const worker = await hetznerTarget({ name: "worker-1" /* … */ });
 
 const deployments: EnvDeployment[] = [
   {
     target: api,
-    remotePath: '/etc/api.env',
-    secretNames: ['STRIPE_KEY', 'DATABASE_URL'],
-    extras: { NODE_ENV: 'production', PORT: '3000' },
-    reload: 'systemctl reload api',
+    remotePath: "/etc/api.env",
+    secretNames: ["STRIPE_KEY", "DATABASE_URL"],
+    extras: { NODE_ENV: "production", PORT: "3000" },
+    reload: "systemctl reload api",
   },
   {
     target: worker,
-    remotePath: '/etc/worker.env',
-    secretNames: ['DATABASE_URL'],
-    extras: { NODE_ENV: 'production' },
-    reload: 'systemctl restart worker',
+    remotePath: "/etc/worker.env",
+    secretNames: ["DATABASE_URL"],
+    extras: { NODE_ENV: "production" },
+    reload: "systemctl restart worker",
   },
 ];
 
@@ -517,10 +562,10 @@ const deployments: EnvDeployment[] = [
 await syncSecretsToDeployments(broker, deployments);
 
 // Rotate STRIPE_KEY everywhere it's used:
-await broker.rotate('STRIPE_KEY');
+await broker.rotate("STRIPE_KEY");
 await syncSecretsToDeployments(
   broker,
-  deploymentsUsing('STRIPE_KEY', deployments)
+  deploymentsUsing("STRIPE_KEY", deployments),
 );
 ```
 
@@ -553,33 +598,35 @@ import {
   renewCertificate,
   installCertificateOnTarget,
   importAccount,
-} from '@absolutejs/deploy/tls';
-import { readFile, writeFile } from 'node:fs/promises';
+} from "@absolutejs/deploy/tls";
+import { readFile, writeFile } from "node:fs/promises";
 
-const currentCertificatePem = await readFile('./cert.pem', 'utf8').catch(() => undefined);
+const currentCertificatePem = await readFile("./cert.pem", "utf8").catch(
+  () => undefined,
+);
 const account = await importAccount(
-  JSON.parse(await readFile('./account.json', 'utf8'))
+  JSON.parse(await readFile("./account.json", "utf8")),
 );
 
 const result = await renewCertificate({
   currentCertificatePem,
-  domains: ['api.example.com'],
+  domains: ["api.example.com"],
   dnsProvider: dns,
-  email: 'ops@example.com',
+  email: "ops@example.com",
   account,
-  renewWhenDaysRemaining: 30,        // default
+  renewWhenDaysRemaining: 30, // default
 });
 
 if (result.renewed) {
   console.log(`renewed (${result.reason})`);
   await installCertificateOnTarget(target, result.certificate, {
-    reload: 'systemctl reload nginx',
+    reload: "systemctl reload nginx",
   });
-  await writeFile('./cert.pem', result.certificate.certificatePem);
-  await writeFile('./key.pem', result.certificate.privateKeyPem);
+  await writeFile("./cert.pem", result.certificate.certificatePem);
+  await writeFile("./key.pem", result.certificate.privateKeyPem);
 } else {
   console.log(
-    `still fresh — ${result.inspection.daysRemaining} days remaining`
+    `still fresh — ${result.inspection.daysRemaining} days remaining`,
   );
 }
 ```
@@ -637,17 +684,17 @@ and traffic cutover remain control-plane responsibilities.
 
 Compute (`Target` via `createCloudTarget`):
 
-  - `@absolutejs/deploy/digitalocean` — droplets
-  - `@absolutejs/deploy/hetzner` — Hetzner Cloud servers
-  - `@absolutejs/deploy/linode` — Linode instances
-  - `@absolutejs/deploy/vultr` — Vultr instances
+- `@absolutejs/deploy/digitalocean` — droplets
+- `@absolutejs/deploy/hetzner` — Hetzner Cloud servers
+- `@absolutejs/deploy/linode` — Linode instances
+- `@absolutejs/deploy/vultr` — Vultr instances
 
 DNS (`DnsProvider`):
 
-  - `@absolutejs/deploy/cloudflare`
-  - `@absolutejs/deploy/digitalocean-dns`
-  - `@absolutejs/deploy/hetzner-dns`
-  - `@absolutejs/deploy/route53` — narrow client interface; BYO `@aws-sdk/client-route-53` via a 4-line shim, or hand-roll a SigV4 fetch client.
+- `@absolutejs/deploy/cloudflare`
+- `@absolutejs/deploy/digitalocean-dns`
+- `@absolutejs/deploy/hetzner-dns`
+- `@absolutejs/deploy/route53` — narrow client interface; BYO `@aws-sdk/client-route-53` via a 4-line shim, or hand-roll a SigV4 fetch client.
 
 All compute adapters share the same `createCloudTarget` machinery
 (find-or-create + wait-for-ready + wait-for-SSH + sshTarget wrap)

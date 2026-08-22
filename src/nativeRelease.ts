@@ -25,7 +25,26 @@ export type AndroidNativeReleaseMetadata = {
   versionCode?: number;
 };
 
-export type NativeReleaseMetadata = AndroidNativeReleaseMetadata;
+export type IosNativeReleaseMetadata = {
+  appBuild: string;
+  appId: string;
+  artifact: "App.ipa";
+  buildNumber?: number;
+  bytes: number;
+  engine: "capacitor";
+  format: 1;
+  marketingVersion: string;
+  platform: "ios";
+  releaseId: string;
+  runtime: string;
+  sha256: string;
+  signed: boolean;
+  type: "ipa";
+};
+
+export type NativeReleaseMetadata =
+  | AndroidNativeReleaseMetadata
+  | IosNativeReleaseMetadata;
 
 export type NativeReleaseRecord = {
   artifactKey: string;
@@ -130,42 +149,79 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
     throw new NativeReleaseRegistryError("Native release appId is invalid");
   if (!SHA256_PATTERN.test(sha256))
     throw new NativeReleaseRegistryError("Native release sha256 is invalid");
-  if (releaseId !== `amobile_android_${sha256}`)
+  if (value.platform !== "android" && value.platform !== "ios")
+    throw new NativeReleaseRegistryError("Native release metadata is invalid");
+  if (releaseId !== `amobile_${value.platform}_${sha256}`)
     throw new NativeReleaseRegistryError(
       "Native release id does not match its artifact digest",
     );
-  if (
-    value.artifact !== "app-release.aab" ||
+  const commonInvalid =
     value.engine !== "capacitor" ||
     value.format !== 1 ||
-    value.platform !== "android" ||
-    value.type !== "aab" ||
     typeof value.signed !== "boolean" ||
     !Number.isSafeInteger(value.bytes) ||
-    Number(value.bytes) < 1 ||
-    (value.versionCode !== undefined &&
-      (!Number.isSafeInteger(value.versionCode) ||
-        Number(value.versionCode) < 1 ||
-        Number(value.versionCode) > 2_100_000_000))
+    Number(value.bytes) < 1;
+  if (commonInvalid)
+    throw new NativeReleaseRegistryError("Native release metadata is invalid");
+  if (value.platform === "android") {
+    if (
+      value.artifact !== "app-release.aab" ||
+      value.type !== "aab" ||
+      (value.versionCode !== undefined &&
+        (!Number.isSafeInteger(value.versionCode) ||
+          Number(value.versionCode) < 1 ||
+          Number(value.versionCode) > 2_100_000_000))
+    )
+      throw new NativeReleaseRegistryError(
+        "Native release metadata is invalid",
+      );
+
+    return {
+      appBuild: requireString(value.appBuild, "appBuild"),
+      appId,
+      artifact: "app-release.aab",
+      bytes: Number(value.bytes),
+      engine: "capacitor",
+      format: 1,
+      platform: "android",
+      releaseId,
+      runtime: requireString(value.runtime, "runtime"),
+      sha256,
+      signed: value.signed === true,
+      type: "aab",
+      ...(value.versionCode === undefined
+        ? {}
+        : { versionCode: Number(value.versionCode) }),
+    };
+  }
+  if (
+    value.artifact !== "App.ipa" ||
+    value.type !== "ipa" ||
+    typeof value.marketingVersion !== "string" ||
+    !/^\d+(?:\.\d+){0,2}$/.test(value.marketingVersion) ||
+    (value.buildNumber !== undefined &&
+      (!Number.isSafeInteger(value.buildNumber) ||
+        Number(value.buildNumber) < 1))
   )
     throw new NativeReleaseRegistryError("Native release metadata is invalid");
 
   return {
     appBuild: requireString(value.appBuild, "appBuild"),
     appId,
-    artifact: "app-release.aab",
+    artifact: "App.ipa",
+    ...(value.buildNumber === undefined
+      ? {}
+      : { buildNumber: Number(value.buildNumber) }),
     bytes: Number(value.bytes),
     engine: "capacitor",
     format: 1,
-    platform: "android",
+    marketingVersion: value.marketingVersion,
+    platform: "ios",
     releaseId,
     runtime: requireString(value.runtime, "runtime"),
     sha256,
-    signed: value.signed,
-    type: "aab",
-    ...(value.versionCode === undefined
-      ? {}
-      : { versionCode: Number(value.versionCode) }),
+    signed: value.signed === true,
+    type: "ipa",
   };
 };
 
@@ -238,7 +294,7 @@ const parseChannel = (value: unknown): NativeReleaseChannel => {
   if (
     !isRecord(value) ||
     value.format !== NATIVE_RELEASE_REGISTRY_FORMAT ||
-    value.platform !== "android" ||
+    (value.platform !== "android" && value.platform !== "ios") ||
     !isIsoTimestamp(value.promotedAt)
   )
     throw new NativeReleaseRegistryError("Native release channel is invalid");
@@ -248,7 +304,7 @@ const parseChannel = (value: unknown): NativeReleaseChannel => {
   const releaseId = requireString(value.releaseId, "channel releaseId");
   if (!APP_ID_PATTERN.test(appId) || !SHA256_PATTERN.test(sha256))
     throw new NativeReleaseRegistryError("Native release channel is invalid");
-  if (releaseId !== `amobile_android_${sha256}`)
+  if (releaseId !== `amobile_${value.platform}_${sha256}`)
     throw new NativeReleaseRegistryError(
       "Native release channel identity does not match",
     );
@@ -257,7 +313,7 @@ const parseChannel = (value: unknown): NativeReleaseChannel => {
     appId,
     channel,
     format: NATIVE_RELEASE_REGISTRY_FORMAT,
-    platform: "android",
+    platform: value.platform,
     promotedAt: value.promotedAt,
     releaseId,
     sha256,
@@ -275,16 +331,21 @@ export const createNativeReleaseRegistry = (
       "Native release maxArtifactBytes is invalid",
     );
   const clock = options.clock ?? (() => new Date());
-  const appRoot = (appId: string, platform: "android") =>
-    `${prefix}/${appIdentity(appId)}/${platform}`;
+  const appRoot = (
+    appId: string,
+    platform: NativeReleaseMetadata["platform"],
+  ) => `${prefix}/${appIdentity(appId)}/${platform}`;
   const releaseRoot = (metadata: NativeReleaseMetadata) =>
     `${appRoot(metadata.appId, metadata.platform)}/releases/${metadata.releaseId}`;
   const recordKey = (metadata: NativeReleaseMetadata) =>
     `${releaseRoot(metadata)}/release.json`;
   const artifactKey = (metadata: NativeReleaseMetadata) =>
     `${releaseRoot(metadata)}/${metadata.artifact}`;
-  const channelKey = (appId: string, platform: "android", channel: string) =>
-    `${appRoot(appId, platform)}/channels/${requireChannel(channel)}.json`;
+  const channelKey = (
+    appId: string,
+    platform: NativeReleaseMetadata["platform"],
+    channel: string,
+  ) => `${appRoot(appId, platform)}/channels/${requireChannel(channel)}.json`;
 
   const requireStoredArtifact = async (
     key: string,
@@ -304,31 +365,51 @@ export const createNativeReleaseRegistry = (
 
   const read = async (input: {
     appId: string;
-    platform: "android";
+    platform: NativeReleaseMetadata["platform"];
     releaseId: string;
   }) => {
     if (!APP_ID_PATTERN.test(input.appId))
       throw new NativeReleaseRegistryError("Native release appId is invalid");
-    const digest = input.releaseId.replace(/^amobile_android_/, "");
+    const digest = input.releaseId.replace(
+      new RegExp(`^amobile_${input.platform}_`),
+      "",
+    );
     if (
       !SHA256_PATTERN.test(digest) ||
-      input.releaseId !== `amobile_android_${digest}`
+      input.releaseId !== `amobile_${input.platform}_${digest}`
     )
       throw new NativeReleaseRegistryError("Native release id is invalid");
-    const identity: NativeReleaseMetadata = {
-      appBuild: "lookup",
-      appId: input.appId,
-      artifact: "app-release.aab",
-      bytes: 1,
-      engine: "capacitor",
-      format: 1,
-      platform: "android",
-      releaseId: input.releaseId,
-      runtime: "lookup",
-      sha256: digest,
-      signed: true,
-      type: "aab",
-    };
+    const identity: NativeReleaseMetadata =
+      input.platform === "android"
+        ? {
+            appBuild: "lookup",
+            appId: input.appId,
+            artifact: "app-release.aab",
+            bytes: 1,
+            engine: "capacitor",
+            format: 1,
+            platform: "android",
+            releaseId: input.releaseId,
+            runtime: "lookup",
+            sha256: digest,
+            signed: true,
+            type: "aab",
+          }
+        : {
+            appBuild: "lookup",
+            appId: input.appId,
+            artifact: "App.ipa",
+            bytes: 1,
+            engine: "capacitor",
+            format: 1,
+            marketingVersion: "1.0.0",
+            platform: "ios",
+            releaseId: input.releaseId,
+            runtime: "lookup",
+            sha256: digest,
+            signed: true,
+            type: "ipa",
+          };
     const key = recordKey(identity);
     const bytes = await options.store.get(key);
     if (!bytes) return null;

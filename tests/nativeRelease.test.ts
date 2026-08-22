@@ -7,6 +7,7 @@ import {
   createNativeReleaseRegistry,
   NativeReleaseRegistryError,
   type AndroidNativeReleaseMetadata,
+  type IosNativeReleaseMetadata,
   type NativeReleaseBlobStore,
 } from "../src/nativeRelease";
 
@@ -95,6 +96,48 @@ const releaseFixture = async (label: string, signed = true) => {
 };
 
 describe("native release registry", () => {
+  test("publishes and resolves an immutable signed IPA", async () => {
+    const memory = memoryStore();
+    const releaseRoot = await temporaryRoot();
+    const artifact = new TextEncoder().encode("ios-ipa");
+    const sha256 = createHash("sha256").update(artifact).digest("hex");
+    const metadata: IosNativeReleaseMetadata = {
+      appBuild: "app-build-ios",
+      appId: "com.example.absolute",
+      artifact: "App.ipa",
+      buildNumber: 9,
+      bytes: artifact.byteLength,
+      engine: "capacitor",
+      format: 1,
+      marketingVersion: "1.2.0",
+      platform: "ios",
+      releaseId: `amobile_ios_${sha256}`,
+      runtime: "runtime-ios",
+      sha256,
+      signed: true,
+      type: "ipa",
+    };
+    await Bun.write(path.join(releaseRoot, metadata.artifact), artifact);
+    await Bun.write(
+      path.join(releaseRoot, "release.json"),
+      `${JSON.stringify(metadata)}\n`,
+    );
+    const registry = createNativeReleaseRegistry({ store: memory.store });
+    const publication = await registry.publish({
+      channel: "testflight",
+      releaseRoot,
+    });
+    if (!publication.channel) throw new Error("expected TestFlight channel");
+    expect(publication.record.metadata).toEqual(metadata);
+    expect(
+      await registry.resolve({
+        appId: metadata.appId,
+        channel: "testflight",
+        platform: "ios",
+      }),
+    ).toEqual({ channel: publication.channel, record: publication.record });
+  });
+
   test("publishes and resolves an immutable signed AAB through a BlobStore", async () => {
     const memory = memoryStore();
     const fixture = await releaseFixture("one");
