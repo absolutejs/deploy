@@ -22,6 +22,7 @@ export type AndroidNativeReleaseMetadata = {
   sha256: string;
   signed: boolean;
   type: "aab";
+  versionCode?: number;
 };
 
 export type NativeReleaseMetadata = AndroidNativeReleaseMetadata;
@@ -141,7 +142,11 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
     value.type !== "aab" ||
     typeof value.signed !== "boolean" ||
     !Number.isSafeInteger(value.bytes) ||
-    Number(value.bytes) < 1
+    Number(value.bytes) < 1 ||
+    (value.versionCode !== undefined &&
+      (!Number.isSafeInteger(value.versionCode) ||
+        Number(value.versionCode) < 1 ||
+        Number(value.versionCode) > 2_100_000_000))
   )
     throw new NativeReleaseRegistryError("Native release metadata is invalid");
 
@@ -158,6 +163,9 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
     sha256,
     signed: value.signed,
     type: "aab",
+    ...(value.versionCode === undefined
+      ? {}
+      : { versionCode: Number(value.versionCode) }),
   };
 };
 

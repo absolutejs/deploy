@@ -73,6 +73,28 @@ export {
 } from './nativeRelease';
 
 export type {
+	GooglePlayAuth,
+	GooglePlayBundle,
+	GooglePlayClient,
+	GooglePlayEdit,
+	GooglePlayNativeReleasePublication,
+	GooglePlayNativeReleasePublisher,
+	GooglePlayReleaseIntent,
+	GooglePlayReleasePublisherOptions,
+	GooglePlayReleaseReceipt,
+	GooglePlayReleaseStatus,
+	GooglePlayReleaseTarget,
+	GooglePlayReviewBehavior,
+	GooglePlayTrack,
+	GooglePlayTrackRelease,
+} from './googlePlay';
+export {
+	createGooglePlayClient,
+	createGooglePlayReleasePublisher,
+	GooglePlayReleaseError,
+} from './googlePlay';
+
+export type {
 	EdgeIngress,
 	EdgeIngressBackend,
 	EdgeIngressCapabilities,

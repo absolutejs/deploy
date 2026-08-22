@@ -48,6 +48,37 @@ both publication and promotion for intentionally non-publishable local-testing
 artifacts. The registry uses the structural BlobStore shape, so Deploy does not
 take a runtime dependency on `@absolutejs/blob` or a cloud SDK.
 
+### Google Play distribution (0.23.0)
+
+`@absolutejs/deploy/google-play` composes the native registry with Google Play.
+The same BlobStore persists stage receipts before external effects, allowing a
+retry to reuse an unexpired edit or resumable upload and to reconcile a commit
+whose successful response was lost.
+
+```ts
+import { createGooglePlayReleasePublisher } from '@absolutejs/deploy/google-play';
+
+export default createGooglePlayReleasePublisher({
+  receiptStore: store,
+  registry: releases
+});
+```
+
+AbsoluteJS supplies the requested track and rollout intent when the developer
+runs `absolute mobile publish android --play-track internal`. Google
+Application Default Credentials must have Android Publisher access to the app.
+Before Gradle runs, the publisher inspects Play's existing bundles and returns
+the next version code. It persists that allocation by application and complete
+build identity, so retries and promotion to another track reuse the same code.
+AbsoluteJS injects it into the AAB and the publisher verifies the upload response
+returned that exact code. Serialize publication jobs for one application because
+Google Play provides monotonic version codes but no reservation operation.
+The default commit behavior is `ERROR_IF_IN_REVIEW`; opting into cancellation
+of an existing review must therefore be explicit. Production staged rollouts
+use `status: 'inProgress'` with `0 < userFraction < 1`; subsequent calls for the
+same release can increase the fraction, halt or resume it, or mark it completed
+without uploading the AAB again.
+
 ## Infrastructure providers (0.14.0)
 
 Control planes use the normalized `InfrastructureProvider` contract from

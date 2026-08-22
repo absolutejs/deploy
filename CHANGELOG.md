@@ -1,5 +1,24 @@
 # @absolutejs/deploy changelog
 
+## 0.23.0 — 2026-08-22
+
+Adds retry-safe Google Play distribution above the native release registry.
+
+- Authenticates through Google Application Default Credentials and uses the
+  Android Publisher edit, resumable bundle upload, track, validation, and
+  commit APIs without exposing Google SDK objects to application code.
+- Preflights Play's complete bundle inventory so AbsoluteJS can inject the next
+  monotonic Android version code automatically before Gradle builds the AAB,
+  persisting each allocation by application and complete build identity so
+  retries and cross-track promotion remain byte-for-byte stable.
+- Persists integrity-checked receipts before uploads and commits, reuses live
+  edits and upload sessions, and reconciles a lost commit response by bundle
+  digest, version code, and track state.
+- Supports internal/custom tracks, draft and completed releases, staged rollout
+  increases, halting/resuming, completion, release notes, and update priority.
+- Defaults review concurrency to `ERROR_IF_IN_REVIEW` so automation cannot
+  silently cancel a release that is already under review.
+
 ## 0.22.0 — 2026-08-22
 
 Adds the provider-neutral native release registry used by AbsoluteJS mobile
