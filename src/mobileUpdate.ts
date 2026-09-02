@@ -1,4 +1,11 @@
-import { createHash, createPublicKey, verify } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  sign,
+  verify,
+  X509Certificate,
+} from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { NativeReleaseBlobStore } from "./nativeRelease";
@@ -12,6 +19,21 @@ const RELEASE = /^amu_[a-f0-9]{64}$/;
 const APP_ID = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EXPO_DESCRIPTOR = "_absolute/expo-update.json";
+const EXPO_CODE_SIGNING_ALGORITHM = "rsa-v1_5-sha256";
+
+export type ExpoUpdateCodeSigningOptions = {
+  keys: Readonly<
+    Record<
+      string,
+      {
+        /** Public X.509 root certificate embedded in matching native apps. */
+        certificate: string | Buffer;
+        /** RSA private key available only to the trusted update-serving process. */
+        privateKey: string | Buffer;
+      }
+    >
+  >;
+};
 
 export type MobileUpdateFile = {
   bytes: number;
@@ -773,7 +795,150 @@ const expoProtocolHeaders = {
   "expo-sfv-version": "0",
 };
 
-const expoRollbackResponse = (request: Request) => {
+const resolveExpoCodeSigning = (
+  value: ExpoUpdateCodeSigningOptions | undefined,
+) => {
+  if (!value) return undefined;
+  const entries = Object.entries(value.keys);
+  if (entries.length === 0)
+    throw new MobileUpdateRegistryError(
+      "Expo code signing requires at least one key",
+    );
+
+  return new Map(
+    entries.map(([keyId, material]) => {
+      if (!NAME.test(keyId))
+        throw new MobileUpdateRegistryError(
+          "Expo code-signing key ID is invalid",
+        );
+      let certificate: X509Certificate;
+      let privateKey: ReturnType<typeof createPrivateKey>;
+      try {
+        certificate = new X509Certificate(material.certificate);
+        privateKey = createPrivateKey(material.privateKey);
+      } catch (error) {
+        throw new MobileUpdateRegistryError(
+          "Expo code-signing certificate or private key is invalid",
+          { cause: error },
+        );
+      }
+      if (
+        certificate.publicKey.asymmetricKeyType !== "rsa" ||
+        privateKey.asymmetricKeyType !== "rsa" ||
+        certificate.issuer !== certificate.subject ||
+        !certificate.verify(certificate.publicKey)
+      )
+        throw new MobileUpdateRegistryError(
+          "Expo code signing requires a self-signed RSA root and private key",
+        );
+      const certificatePublicKey = certificate.publicKey.export({
+        format: "der",
+        type: "spki",
+      });
+      const privatePublicKey = createPublicKey(privateKey).export({
+        format: "der",
+        type: "spki",
+      });
+      if (!certificatePublicKey.equals(privatePublicKey))
+        throw new MobileUpdateRegistryError(
+          "Expo code-signing private key does not match its certificate",
+        );
+      const now = Date.now();
+      if (
+        now < Date.parse(certificate.validFrom) ||
+        now > Date.parse(certificate.validTo)
+      )
+        throw new MobileUpdateRegistryError(
+          "Expo code-signing certificate is not currently valid",
+        );
+
+      return [keyId, { keyId, privateKey }] as const;
+    }),
+  );
+};
+
+type ExpoCodeSigning =
+  NonNullable<ReturnType<typeof resolveExpoCodeSigning>> extends Map<
+    string,
+    infer Signing
+  >
+    ? Signing
+    : never;
+
+const expoSignatureExpectation = (value: string) => {
+  const fields = new Map<string, string | true>();
+  for (const raw of value.split(",")) {
+    const match = /^\s*([a-z][a-z0-9_-]*)(?:=(\?1|\?0|"[^"\\]*"|[a-z0-9._-]+))?\s*$/u.exec(
+      raw,
+    );
+    if (!match || fields.has(match[1]!))
+      throw new MobileUpdateRegistryError(
+        "Expo code-signing expectation is invalid",
+      );
+    const encoded = match[2];
+    fields.set(
+      match[1]!,
+      encoded === undefined || encoded === "?1"
+        ? true
+        : encoded.startsWith('"')
+          ? encoded.slice(1, -1)
+          : encoded,
+    );
+  }
+
+  return fields;
+};
+
+const requestedExpoSignature = (
+  request: Request,
+  codeSigning: Map<string, ExpoCodeSigning> | undefined,
+) => {
+  const expectation = request.headers.get("expo-expect-signature");
+  if (!expectation) return undefined;
+  if (!codeSigning)
+    throw new MobileUpdateRegistryError(
+      "Expo end-to-end code signing is not configured",
+    );
+  const fields = expoSignatureExpectation(expectation);
+  const keyId = fields.get("keyid");
+  const algorithm = fields.get("alg");
+  const signatureRequested = fields.get("sig") === true;
+  if (
+    !signatureRequested ||
+    (keyId !== undefined && typeof keyId !== "string") ||
+    (algorithm !== undefined && algorithm !== EXPO_CODE_SIGNING_ALGORITHM)
+  )
+    throw new MobileUpdateRegistryError(
+      "Requested Expo code-signing parameters are unsupported",
+    );
+
+  const selected = typeof keyId === "string"
+    ? codeSigning.get(keyId)
+    : codeSigning.size === 1
+      ? codeSigning.values().next().value
+      : undefined;
+  if (!selected)
+    throw new MobileUpdateRegistryError(
+      "Requested Expo code-signing key is unavailable",
+    );
+
+  return selected;
+};
+
+const expoSignatureHeader = (body: string, codeSigning: ExpoCodeSigning) => {
+  const signature = sign(
+    "RSA-SHA256",
+    Buffer.from(body),
+    codeSigning.privateKey,
+  );
+
+  return `sig="${signature.toString("base64")}", keyid="${codeSigning.keyId}", alg="${EXPO_CODE_SIGNING_ALGORITHM}"`;
+};
+
+const expoRollbackResponse = (
+  request: Request,
+  codeSigning: ExpoCodeSigning | undefined,
+) => {
   const current = request.headers.get("expo-current-update-id");
   const embedded = request.headers.get("expo-embedded-update-id");
   if (!current || current === embedded)
@@ -787,6 +952,9 @@ const expoRollbackResponse = (request: Request) => {
     `--${boundary}`,
     'content-disposition: form-data; name="directive"',
     "content-type: application/json; charset=utf-8",
+    ...(codeSigning
+      ? [`expo-signature: ${expoSignatureHeader(directive, codeSigning)}`]
+      : []),
     "",
     directive,
     `--${boundary}--`,
@@ -805,6 +973,7 @@ export const createMobileUpdateHandler = (options: {
   allowedOrigins?: readonly string[];
   appId: string;
   channel: string;
+  expoCodeSigning?: ExpoUpdateCodeSigningOptions;
   registry: MobileUpdateRegistry;
   route?: string;
 }) => {
@@ -814,6 +983,7 @@ export const createMobileUpdateHandler = (options: {
   const allowedOrigins = new Set(
     options.allowedOrigins ?? ["capacitor://localhost", "https://localhost"],
   );
+  const expoCodeSigning = resolveExpoCodeSigning(options.expoCodeSigning);
 
   return async (request: Request) => {
     const origin = request.headers.get("origin");
@@ -846,7 +1016,9 @@ export const createMobileUpdateHandler = (options: {
       const expoProtocol = expoProtocolVersion !== null;
       if (expoProtocol && expoProtocolVersion !== "1")
         return Response.json(
-          { error: `Unsupported Expo Updates protocol version: ${expoProtocolVersion}` },
+          {
+            error: `Unsupported Expo Updates protocol version: ${expoProtocolVersion}`,
+          },
           { status: 406 },
         );
       const appId = request.headers.get("x-absolute-mobile-app");
@@ -871,12 +1043,25 @@ export const createMobileUpdateHandler = (options: {
         runtimeFingerprint,
       });
       if (expoProtocol) {
-        if (request.headers.has("expo-expect-signature"))
-          return Response.json(
-            { error: "Expo end-to-end code signing is not configured." },
-            { status: 400 },
+        let requestedCodeSigning: ExpoCodeSigning | undefined;
+        try {
+          requestedCodeSigning = requestedExpoSignature(
+            request,
+            expoCodeSigning,
           );
-        if (!selected) return expoRollbackResponse(request);
+        } catch (error) {
+          return Response.json(
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Expo code-signing negotiation failed",
+            },
+            { status: expoCodeSigning ? 406 : 400 },
+          );
+        }
+        if (!selected)
+          return expoRollbackResponse(request, requestedCodeSigning);
         const platform = request.headers.get("expo-platform");
         if (platform !== "android" && platform !== "ios")
           return new Response(null, { status: 400 });
@@ -914,27 +1099,37 @@ export const createMobileUpdateHandler = (options: {
             url: `${releaseRoute}/${encodeUpdatePath(asset.path)}`,
           };
         };
-        return Response.json(
-          {
-            assets: platformUpdate.assets.map((asset) => protocolAsset(asset)),
-            createdAt: selected.manifest.createdAt,
-            extra: {
-              absolutejs: {
-                channel: selected.manifest.channel,
-                releaseId: selected.manifest.releaseId,
-              },
-              expoClient: descriptor.expoConfig,
-            },
-            id: updateId,
-            launchAsset: protocolAsset(platformUpdate.launchAsset, true),
-            metadata: {
+        const manifest = JSON.stringify({
+          assets: platformUpdate.assets.map((asset) => protocolAsset(asset)),
+          createdAt: selected.manifest.createdAt,
+          extra: {
+            absolutejs: {
               channel: selected.manifest.channel,
               releaseId: selected.manifest.releaseId,
             },
-            runtimeVersion: descriptor.runtimeVersion,
+            expoClient: descriptor.expoConfig,
           },
-          { headers: expoProtocolHeaders },
-        );
+          id: updateId,
+          launchAsset: protocolAsset(platformUpdate.launchAsset, true),
+          metadata: {
+            channel: selected.manifest.channel,
+            releaseId: selected.manifest.releaseId,
+          },
+          runtimeVersion: descriptor.runtimeVersion,
+        });
+        return new Response(manifest, {
+          headers: {
+            ...expoProtocolHeaders,
+            ...(requestedCodeSigning
+              ? {
+                  "expo-signature": expoSignatureHeader(
+                    manifest,
+                    requestedCodeSigning,
+                  ),
+                }
+              : {}),
+          },
+        });
       }
       if (!selected) return new Response(null, { status: 204 });
 

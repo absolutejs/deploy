@@ -1,4 +1,10 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  verify,
+  X509Certificate,
+} from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +16,12 @@ import {
   type MobileUpdateManifest,
 } from "../src/mobileUpdate";
 import type { NativeReleaseBlobStore } from "../src/nativeRelease";
+import {
+  convertCertificateToCertificatePEM,
+  convertKeyPairToPEM,
+  generateKeyPair,
+  generateSelfSignedCodeSigningCertificate,
+} from "@expo/code-signing-certificates";
 
 const roots: string[] = [];
 const signingKey = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -379,9 +391,49 @@ describe("mobile update registry", () => {
       releaseDirectory: release.root,
       rollout: 1,
     });
+    const expoKeyPair = generateKeyPair();
+    const expoCertificate = convertCertificateToCertificatePEM(
+      generateSelfSignedCodeSigningCertificate({
+        commonName: "AbsoluteJS Test Updates",
+        keyPair: expoKeyPair,
+        validityNotAfter: new Date("2036-01-01T00:00:00.000Z"),
+        validityNotBefore: new Date("2026-01-01T00:00:00.000Z"),
+      }),
+    );
+    const expoPrivateKey = convertKeyPairToPEM(expoKeyPair).privateKeyPEM;
+    expect(() =>
+      createMobileUpdateHandler({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        expoCodeSigning: {
+          keys: {
+            invalid: {
+              certificate: expoCertificate,
+              privateKey: signingKey.privateKey.export({
+                format: "pem",
+                type: "pkcs8",
+              }),
+            },
+          },
+        },
+        registry,
+      }),
+    ).toThrow("self-signed RSA root and private key");
     const handler = createMobileUpdateHandler({
       appId: release.manifest.appId,
       channel: release.manifest.channel,
+      expoCodeSigning: {
+        keys: {
+          "production-2025": {
+            certificate: expoCertificate,
+            privateKey: expoPrivateKey,
+          },
+          "production-2026": {
+            certificate: expoCertificate,
+            privateKey: expoPrivateKey,
+          },
+        },
+      },
       registry,
     });
     const headers = {
@@ -392,15 +444,35 @@ describe("mobile update registry", () => {
       "x-absolute-mobile-channel": release.manifest.channel,
       "x-absolute-mobile-installation": "11111111-1111-4111-8111-111111111111",
     };
+    const signedHeaders = {
+      ...headers,
+      "expo-expect-signature":
+        'sig, keyid="production-2026", alg="rsa-v1_5-sha256"',
+    };
     const response = await handler(
       new Request(
         "https://api.example.com/__absolute/mobile/updates/production/update.json",
-        { headers },
+        { headers: signedHeaders },
       ),
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("expo-protocol-version")).toBe("1");
-    const manifest = await response.json();
+    const responseBody = await response.text();
+    const manifest = JSON.parse(responseBody);
+    const signatureHeader = response.headers.get("expo-signature");
+    expect(signatureHeader).toContain('keyid="production-2026"');
+    const signature = /sig="([A-Za-z0-9+/]+={0,2})"/u.exec(
+      signatureHeader ?? "",
+    )?.[1];
+    expect(signature).toBeDefined();
+    expect(
+      verify(
+        "RSA-SHA256",
+        Buffer.from(responseBody),
+        new X509Certificate(expoCertificate).publicKey,
+        Buffer.from(signature!, "base64"),
+      ),
+    ).toBe(true);
     expect(manifest.runtimeVersion).toBe(release.manifest.runtimeFingerprint);
     expect(manifest.launchAsset.url).toContain(
       `${release.manifest.releaseId}/files/_expo/static/js/ios/entry.hbc`,
@@ -422,6 +494,32 @@ describe("mobile update registry", () => {
       error: "Unsupported Expo Updates protocol version: 2",
     });
 
+    const unsupportedSigning = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        {
+          headers: {
+            ...headers,
+            "expo-expect-signature":
+              'sig, keyid="wrong-key", alg="rsa-v1_5-sha256"',
+          },
+        },
+      ),
+    );
+    expect(unsupportedSigning.status).toBe(406);
+    const ambiguousSigning = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        {
+          headers: {
+            ...headers,
+            "expo-expect-signature": 'sig, alg="rsa-v1_5-sha256"',
+          },
+        },
+      ),
+    );
+    expect(ambiguousSigning.status).toBe(406);
+
     await registry.rollbackUpdate({
       appId: release.manifest.appId,
       channel: release.manifest.channel,
@@ -431,7 +529,7 @@ describe("mobile update registry", () => {
         "https://api.example.com/__absolute/mobile/updates/production/update.json",
         {
           headers: {
-            ...headers,
+            ...signedHeaders,
             "expo-current-update-id": manifest.id,
             "expo-embedded-update-id": "embedded-id",
           },
@@ -439,6 +537,36 @@ describe("mobile update registry", () => {
       ),
     );
     expect(rollback.headers.get("content-type")).toContain("multipart/mixed");
-    expect(await rollback.text()).toContain("rollBackToEmbedded");
+    const rollbackBody = await rollback.text();
+    expect(rollbackBody).toContain("rollBackToEmbedded");
+    expect(rollbackBody).toContain('expo-signature: sig="');
+    const rollbackDirective = /\r\n\r\n(\{[^\r]+\})\r\n--/u.exec(
+      rollbackBody,
+    )?.[1];
+    const rollbackSignature =
+      /expo-signature: sig="([A-Za-z0-9+/]+={0,2})"/u.exec(rollbackBody)?.[1];
+    expect(rollbackDirective).toBeDefined();
+    expect(rollbackSignature).toBeDefined();
+    expect(
+      verify(
+        "RSA-SHA256",
+        Buffer.from(rollbackDirective!),
+        new X509Certificate(expoCertificate).publicKey,
+        Buffer.from(rollbackSignature!, "base64"),
+      ),
+    ).toBe(true);
+
+    const unsignedHandler = createMobileUpdateHandler({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      registry,
+    });
+    const missingServerKey = await unsignedHandler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        { headers: signedHeaders },
+      ),
+    );
+    expect(missingServerKey.status).toBe(400);
   });
 });

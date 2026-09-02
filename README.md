@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.0)
+### Signed mobile web-bundle updates (0.25.2)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
@@ -120,6 +120,11 @@ the ECDSA P-256 signature and every file digest before storing anything, then
 selects staged-rollout cohorts from an anonymous installation ID. Native runtime
 fingerprints prevent a web bundle from crossing a plugin, permission, Auth, or
 local-data ABI boundary.
+
+Expo clients can additionally verify the exact manifest or rollback directive
+end-to-end with an X.509 certificate embedded in the native binary. Keep every
+still-supported rotation key on the trusted server; the installed binary's
+requested key ID selects it.
 
 ```ts
 import {
@@ -134,6 +139,14 @@ const updates = createMobileUpdateRegistry({
 const handleUpdate = createMobileUpdateHandler({
   appId: "com.example.product",
   channel: "production",
+  expoCodeSigning: {
+    keys: {
+      main: {
+        certificate: process.env.EXPO_UPDATE_CERTIFICATE!,
+        privateKey: process.env.EXPO_UPDATE_PRIVATE_KEY!,
+      },
+    },
+  },
   registry: updates,
 });
 
