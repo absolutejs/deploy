@@ -11,6 +11,7 @@ const HASH = /^[a-f0-9]{64}$/;
 const RELEASE = /^amu_[a-f0-9]{64}$/;
 const APP_ID = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const EXPO_DESCRIPTOR = "_absolute/expo-update.json";
 
 export type MobileUpdateFile = {
   bytes: number;
@@ -112,6 +113,20 @@ export type MobileUpdateRegistryOptions = {
 
 export class MobileUpdateRegistryError extends Error {}
 
+type ExpoUpdateAsset = { extension?: string; path: string };
+type ExpoUpdateDescriptor = {
+  engine: "expo";
+  expoConfig: Record<string, unknown>;
+  format: 1;
+  platforms: Partial<
+    Record<
+      "android" | "ios",
+      { assets: ExpoUpdateAsset[]; launchAsset: ExpoUpdateAsset }
+    >
+  >;
+  runtimeVersion: string;
+};
+
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -138,6 +153,75 @@ const safePath = (value: unknown) => {
     throw new MobileUpdateRegistryError("Mobile update file path is invalid");
 
   return file;
+};
+
+const expoAsset = (value: unknown): ExpoUpdateAsset => {
+  if (!object(value))
+    throw new MobileUpdateRegistryError("Expo update asset is invalid");
+  const assetPath = safePath(value.path);
+  if (
+    value.extension !== undefined &&
+    (typeof value.extension !== "string" ||
+      !/^[A-Za-z0-9]+$/.test(value.extension))
+  )
+    throw new MobileUpdateRegistryError(
+      "Expo update asset extension is invalid",
+    );
+
+  return {
+    ...(typeof value.extension === "string"
+      ? { extension: value.extension }
+      : {}),
+    path: assetPath,
+  };
+};
+
+const parseExpoUpdateDescriptor = (bytes: Uint8Array): ExpoUpdateDescriptor => {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new MobileUpdateRegistryError("Expo update descriptor is invalid");
+  }
+  if (
+    !object(value) ||
+    value.engine !== "expo" ||
+    value.format !== 1 ||
+    !object(value.expoConfig) ||
+    !object(value.platforms) ||
+    typeof value.runtimeVersion !== "string" ||
+    !HASH.test(value.runtimeVersion)
+  )
+    throw new MobileUpdateRegistryError("Expo update descriptor is invalid");
+  const platforms: ExpoUpdateDescriptor["platforms"] = {};
+  for (const name of ["android", "ios"] as const) {
+    const candidate = value.platforms[name];
+    if (candidate === undefined) continue;
+    if (
+      !object(candidate) ||
+      !Array.isArray(candidate.assets) ||
+      !object(candidate.launchAsset)
+    )
+      throw new MobileUpdateRegistryError(
+        "Expo update platform descriptor is invalid",
+      );
+    platforms[name] = {
+      assets: candidate.assets.map(expoAsset),
+      launchAsset: expoAsset(candidate.launchAsset),
+    };
+  }
+  if (Object.keys(platforms).length === 0)
+    throw new MobileUpdateRegistryError(
+      "Expo update descriptor has no native platforms",
+    );
+
+  return {
+    engine: "expo",
+    expoConfig: value.expoConfig,
+    format: 1,
+    platforms,
+    runtimeVersion: value.runtimeVersion,
+  };
 };
 
 export const parseMobileUpdateManifest = (
@@ -656,6 +740,67 @@ export const createMobileUpdateRegistry = (
   };
 };
 
+const expoUpdateId = (releaseId: string) => {
+  const hash = releaseId.slice("amu_".length, "amu_".length + 32);
+
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+};
+
+const expoContentType = (extension: string | undefined, launch: boolean) => {
+  if (launch) return "application/javascript";
+  const normalized = extension?.toLowerCase();
+  if (normalized === "png") return "image/png";
+  if (normalized === "jpg" || normalized === "jpeg") return "image/jpeg";
+  if (normalized === "webp") return "image/webp";
+  if (normalized === "gif") return "image/gif";
+  if (normalized === "svg") return "image/svg+xml";
+  if (normalized === "json") return "application/json";
+  if (normalized === "ttf") return "font/ttf";
+  if (normalized === "otf") return "font/otf";
+  if (normalized === "woff") return "font/woff";
+  if (normalized === "woff2") return "font/woff2";
+
+  return "application/octet-stream";
+};
+
+const encodeUpdatePath = (value: string) =>
+  value.split("/").map(encodeURIComponent).join("/");
+
+const expoProtocolHeaders = {
+  "cache-control": "private, max-age=0",
+  "content-type": "application/expo+json",
+  "expo-protocol-version": "1",
+  "expo-sfv-version": "0",
+};
+
+const expoRollbackResponse = (request: Request) => {
+  const current = request.headers.get("expo-current-update-id");
+  const embedded = request.headers.get("expo-embedded-update-id");
+  if (!current || current === embedded)
+    return new Response(null, { status: 204 });
+  const boundary = `absolutejs-${crypto.randomUUID()}`;
+  const directive = JSON.stringify({
+    parameters: { commitTime: new Date().toISOString() },
+    type: "rollBackToEmbedded",
+  });
+  const body = [
+    `--${boundary}`,
+    'content-disposition: form-data; name="directive"',
+    "content-type: application/json; charset=utf-8",
+    "",
+    directive,
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+
+  return new Response(body, {
+    headers: {
+      ...expoProtocolHeaders,
+      "content-type": `multipart/mixed; boundary=${boundary}`,
+    },
+  });
+};
+
 export const createMobileUpdateHandler = (options: {
   allowedOrigins?: readonly string[];
   appId: string;
@@ -697,14 +842,21 @@ export const createMobileUpdateHandler = (options: {
       ? pathname.slice(route.length + 1)
       : "";
     if (relative === "update.json") {
+      const expoProtocolVersion = request.headers.get("expo-protocol-version");
+      const expoProtocol = expoProtocolVersion !== null;
+      if (expoProtocol && expoProtocolVersion !== "1")
+        return Response.json(
+          { error: `Unsupported Expo Updates protocol version: ${expoProtocolVersion}` },
+          { status: 406 },
+        );
       const appId = request.headers.get("x-absolute-mobile-app");
       const channel = request.headers.get("x-absolute-mobile-channel");
       const installationId = request.headers.get(
         "x-absolute-mobile-installation",
       );
-      const runtimeFingerprint = request.headers.get(
-        "x-absolute-mobile-runtime",
-      );
+      const runtimeFingerprint = expoProtocol
+        ? request.headers.get("expo-runtime-version")
+        : request.headers.get("x-absolute-mobile-runtime");
       if (
         appId !== options.appId ||
         channel !== options.channel ||
@@ -718,6 +870,72 @@ export const createMobileUpdateHandler = (options: {
         installationId,
         runtimeFingerprint,
       });
+      if (expoProtocol) {
+        if (request.headers.has("expo-expect-signature"))
+          return Response.json(
+            { error: "Expo end-to-end code signing is not configured." },
+            { status: 400 },
+          );
+        if (!selected) return expoRollbackResponse(request);
+        const platform = request.headers.get("expo-platform");
+        if (platform !== "android" && platform !== "ios")
+          return new Response(null, { status: 400 });
+        const updateId = expoUpdateId(selected.manifest.releaseId);
+        if (request.headers.get("expo-current-update-id") === updateId)
+          return new Response(null, { status: 204 });
+        const descriptorFile = await options.registry.readUpdateFile({
+          appId,
+          path: EXPO_DESCRIPTOR,
+          releaseId: selected.manifest.releaseId,
+        });
+        if (!descriptorFile) return new Response(null, { status: 409 });
+        const descriptor = parseExpoUpdateDescriptor(descriptorFile.bytes);
+        const platformUpdate = descriptor.platforms[platform];
+        if (!platformUpdate || descriptor.runtimeVersion !== runtimeFingerprint)
+          return new Response(null, { status: 204 });
+        const origin = new URL(request.url).origin;
+        const releaseRoute = `${origin}/${route}/${selected.manifest.releaseId}/files`;
+        const protocolAsset = (asset: ExpoUpdateAsset, launch = false) => {
+          const file = selected.manifest.files.find(
+            (candidate) => candidate.path === asset.path,
+          );
+          if (!file)
+            throw new MobileUpdateRegistryError(
+              `Expo update references missing signed asset ${asset.path}`,
+            );
+
+          return {
+            contentType: expoContentType(asset.extension, launch),
+            ...(asset.extension
+              ? { fileExtension: `.${asset.extension}` }
+              : {}),
+            key: file.sha256,
+            hash: Buffer.from(file.sha256, "hex").toString("base64url"),
+            url: `${releaseRoute}/${encodeUpdatePath(asset.path)}`,
+          };
+        };
+        return Response.json(
+          {
+            assets: platformUpdate.assets.map((asset) => protocolAsset(asset)),
+            createdAt: selected.manifest.createdAt,
+            extra: {
+              absolutejs: {
+                channel: selected.manifest.channel,
+                releaseId: selected.manifest.releaseId,
+              },
+              expoClient: descriptor.expoConfig,
+            },
+            id: updateId,
+            launchAsset: protocolAsset(platformUpdate.launchAsset, true),
+            metadata: {
+              channel: selected.manifest.channel,
+              releaseId: selected.manifest.releaseId,
+            },
+            runtimeVersion: descriptor.runtimeVersion,
+          },
+          { headers: expoProtocolHeaders },
+        );
+      }
       if (!selected) return new Response(null, { status: 204 });
 
       return Response.json(selected.manifest, {
@@ -742,6 +960,12 @@ export const createMobileUpdateHandler = (options: {
         ...cors,
         "cache-control": "public, max-age=31536000, immutable",
         "content-length": String(file.file.bytes),
+        "content-type": expoContentType(
+          file.file.path.includes(".")
+            ? file.file.path.slice(file.file.path.lastIndexOf(".") + 1)
+            : undefined,
+          false,
+        ),
         etag: `"${file.file.sha256}"`,
       },
     });

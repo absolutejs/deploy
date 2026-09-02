@@ -104,6 +104,80 @@ const fixture = async (label: string) => {
   return { manifest, root };
 };
 
+const expoFixture = async () => {
+  const root = await temporaryRoot();
+  const runtimeFingerprint = "c".repeat(64);
+  const sources = new Map([
+    ["_expo/static/js/ios/entry.hbc", new TextEncoder().encode("ios")],
+    ["_expo/static/js/android/entry.hbc", new TextEncoder().encode("android")],
+    ["assets/icon.png", new TextEncoder().encode("image")],
+  ]);
+  const descriptor = {
+    engine: "expo",
+    expoConfig: { name: "Absolute", slug: "absolute" },
+    format: 1,
+    platforms: {
+      android: {
+        assets: [{ extension: "png", path: "assets/icon.png" }],
+        launchAsset: {
+          extension: "hbc",
+          path: "_expo/static/js/android/entry.hbc",
+        },
+      },
+      ios: {
+        assets: [{ extension: "png", path: "assets/icon.png" }],
+        launchAsset: {
+          extension: "hbc",
+          path: "_expo/static/js/ios/entry.hbc",
+        },
+      },
+    },
+    runtimeVersion: runtimeFingerprint,
+  };
+  sources.set(
+    "_absolute/expo-update.json",
+    new TextEncoder().encode(JSON.stringify(descriptor)),
+  );
+  const files = [...sources].map(([filePath, contents]) => ({
+    bytes: contents.byteLength,
+    path: filePath,
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  }));
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  const releaseId = `amu_${createHash("sha256").update("expo").digest("hex")}`;
+  const unsigned: Omit<MobileUpdateManifest, "signature"> = {
+    appId: "com.example.absolute",
+    channel: "production",
+    classification: "bug-fix",
+    createdAt: "2026-09-02T12:00:00.000Z",
+    files,
+    format: 1,
+    releaseId,
+    runtimeFingerprint,
+    withinSubmittedPurpose: true,
+  };
+  const manifest: MobileUpdateManifest = {
+    ...unsigned,
+    signature: {
+      algorithm: "ecdsa-p256-sha256",
+      keyId: "key-1",
+      value: sign(
+        "sha256",
+        new TextEncoder().encode(JSON.stringify(canonicalValue(unsigned))),
+        { dsaEncoding: "ieee-p1363", key: signingKey.privateKey },
+      ).toString("base64"),
+    },
+  };
+  await Promise.all(
+    [...sources].map(([filePath, contents]) =>
+      Bun.write(path.join(root, "files", filePath), contents),
+    ),
+  );
+  await Bun.write(path.join(root, "update.json"), JSON.stringify(manifest));
+
+  return { manifest, root };
+};
+
 describe("mobile update registry", () => {
   test("publishes immutable files and resolves a stable staged cohort", async () => {
     const memory = memoryStore();
@@ -291,5 +365,80 @@ describe("mobile update registry", () => {
       }),
     ).rejects.toThrow("signature verification failed");
     expect(memory.objects.size).toBe(0);
+  });
+
+  test("serves signed Expo exports through protocol v1 with stable cohorts and rollback", async () => {
+    const memory = memoryStore();
+    const release = await expoFixture();
+    const registry = createMobileUpdateRegistry({
+      publicKeys,
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 1,
+    });
+    const handler = createMobileUpdateHandler({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      registry,
+    });
+    const headers = {
+      "expo-platform": "ios",
+      "expo-protocol-version": "1",
+      "expo-runtime-version": release.manifest.runtimeFingerprint,
+      "x-absolute-mobile-app": release.manifest.appId,
+      "x-absolute-mobile-channel": release.manifest.channel,
+      "x-absolute-mobile-installation": "11111111-1111-4111-8111-111111111111",
+    };
+    const response = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        { headers },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("expo-protocol-version")).toBe("1");
+    const manifest = await response.json();
+    expect(manifest.runtimeVersion).toBe(release.manifest.runtimeFingerprint);
+    expect(manifest.launchAsset.url).toContain(
+      `${release.manifest.releaseId}/files/_expo/static/js/ios/entry.hbc`,
+    );
+    expect(manifest.assets[0].contentType).toBe("image/png");
+    expect(manifest.assets[0].hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(manifest.extra.absolutejs.releaseId).toBe(
+      release.manifest.releaseId,
+    );
+
+    const unsupported = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        { headers: { ...headers, "expo-protocol-version": "2" } },
+      ),
+    );
+    expect(unsupported.status).toBe(406);
+    expect(await unsupported.json()).toEqual({
+      error: "Unsupported Expo Updates protocol version: 2",
+    });
+
+    await registry.rollbackUpdate({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+    });
+    const rollback = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        {
+          headers: {
+            ...headers,
+            "expo-current-update-id": manifest.id,
+            "expo-embedded-update-id": "embedded-id",
+          },
+        },
+      ),
+    );
+    expect(rollback.headers.get("content-type")).toContain("multipart/mixed");
+    expect(await rollback.text()).toContain("rollBackToEmbedded");
   });
 });
