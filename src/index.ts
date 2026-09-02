@@ -74,6 +74,24 @@ export {
 } from "./nativeRelease";
 
 export type {
+  MobileUpdateChannel,
+  MobileUpdateFile,
+  MobileUpdateManifest,
+  MobileUpdatePublication,
+  MobileUpdatePromotion,
+  MobileUpdateRegistry,
+  MobileUpdateRegistryOptions,
+  MobileUpdateRollback,
+} from "./mobileUpdate";
+export {
+  createMobileUpdateHandler,
+  createMobileUpdateRegistry,
+  MOBILE_UPDATE_REGISTRY_FORMAT,
+  MobileUpdateRegistryError,
+  parseMobileUpdateManifest,
+} from "./mobileUpdate";
+
+export type {
   GooglePlayAuth,
   GooglePlayBundle,
   GooglePlayClient,

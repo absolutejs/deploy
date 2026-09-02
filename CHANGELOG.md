@@ -1,5 +1,19 @@
 # @absolutejs/deploy changelog
 
+## 0.25.0 — 2026-09-01
+
+Adds trusted staged publication for AbsoluteJS Capacitor web-bundle updates.
+
+- Verifies canonical ECDSA P-256/SHA-256 manifests and every declared file
+  digest before storing any release bytes.
+- Stores release manifests and assets immutably through the existing BlobStore
+  contract, with small mutable channel pointers for promotion and rollback.
+- Selects anonymous installation cohorts deterministically, preserves a prior
+  fallback release during staged rollout, and rejects incompatible native
+  runtime fingerprints.
+- Serves no-cache manifests and immutable assets through a native-origin-aware
+  handler without credentialed wildcard CORS.
+
 ## 0.23.0 — 2026-08-22
 
 Adds retry-safe Google Play distribution above the native release registry.

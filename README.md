@@ -112,6 +112,40 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
+### Signed mobile web-bundle updates (0.25.0)
+
+`@absolutejs/deploy/mobile-update` publishes the signed immutable update
+directory created by `absolute mobile update build`. The trusted server verifies
+the ECDSA P-256 signature and every file digest before storing anything, then
+selects staged-rollout cohorts from an anonymous installation ID. Native runtime
+fingerprints prevent a web bundle from crossing a plugin, permission, Auth, or
+local-data ABI boundary.
+
+```ts
+import {
+  createMobileUpdateHandler,
+  createMobileUpdateRegistry,
+} from "@absolutejs/deploy/mobile-update";
+
+const updates = createMobileUpdateRegistry({
+  publicKeys: { "production-2026": process.env.MOBILE_UPDATE_PUBLIC_KEY! },
+  store,
+});
+const handleUpdate = createMobileUpdateHandler({
+  appId: "com.example.product",
+  channel: "production",
+  registry: updates,
+});
+
+export default updates;
+```
+
+Mount `handleUpdate` at
+`/__absolute/mobile/updates/production/*`. Manifests are served without caching;
+release assets are content-verified and immutable. Promotion only changes a
+small channel pointer, and rollback can select a prior release or the embedded
+store build without copying bundle bytes.
+
 ## Infrastructure providers (0.14.0)
 
 Control planes use the normalized `InfrastructureProvider` contract from
