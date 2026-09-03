@@ -7,6 +7,7 @@ import {
   AppStoreConnectReleaseError,
   createAppStoreConnectReleasePublisher,
   createAppStoreConnectClient,
+  type AppStoreConnectBuildUpload,
   type AppStoreConnectClient,
 } from "../src/appStoreConnect";
 import type {
@@ -79,24 +80,51 @@ const fixture = async () => {
   return { metadata, publication, releaseRoot };
 };
 
-const fakeApple = (internal = false) => {
+type FakeAppleOverrides = {
+  existingFile?: { fileSize: number; id: string } | null;
+  failUploadOnce?: boolean;
+  findUpload?: AppStoreConnectBuildUpload | null;
+  getUpload?: AppStoreConnectBuildUpload;
+};
+
+const fakeApple = (
+  internal = false,
+  allBuilds = false,
+  overrides: FakeAppleOverrides = {},
+) => {
   const events: string[] = [];
+  const created = { buildUploadFiles: 0, buildUploads: 0 };
+  let failedUpload = false;
+  let failUpload = overrides.failUploadOnce ?? false;
   let uploaded = false;
   const client: AppStoreConnectClient = {
     findAppId: async () => "apple-app-1",
     listBuildNumbers: async () => [3, 7],
-    findBuildUpload: async () => null,
-    createBuildUpload: async () => ({
-      id: "upload-1",
-      state: "AWAITING_UPLOAD",
-    }),
-    getBuildUpload: async () => ({
-      id: "upload-1",
-      state: uploaded ? "COMPLETE" : "AWAITING_UPLOAD",
-    }),
-    createBuildUploadFile: async () => "file-1",
-    findBuildUploadFile: async () => null,
+    findBuildUpload: async () => overrides.findUpload ?? null,
+    createBuildUpload: async () => {
+      created.buildUploads += 1;
+      return { id: "upload-1", state: "AWAITING_UPLOAD" };
+    },
+    getBuildUpload: async () =>
+      overrides.getUpload ?? {
+        id: "upload-1",
+        state: failedUpload
+          ? "FAILED"
+          : uploaded
+            ? "COMPLETE"
+            : "AWAITING_UPLOAD",
+      },
+    createBuildUploadFile: async () => {
+      created.buildUploadFiles += 1;
+      return "file-1";
+    },
+    findBuildUploadFile: async () => overrides.existingFile ?? null,
     uploadBuildFile: async ({ artifactPath }) => {
+      if (failUpload) {
+        failUpload = false;
+        failedUpload = true;
+        throw new Error("simulated upload failure");
+      }
       events.push(`upload:${path.basename(artifactPath)}`);
     },
     commitBuildUploadFile: async ({ sha256 }) => {
@@ -108,7 +136,12 @@ const fakeApple = (internal = false) => {
         ? { id: "build-1", processingState: "VALID", version: "8" }
         : null,
     resolveGroups: async ({ groups }) =>
-      groups.map((name) => ({ id: "group-1", isInternal: internal, name })),
+      groups.map((name) => ({
+        hasAccessToAllBuilds: allBuilds,
+        id: "group-1",
+        isInternal: internal,
+        name,
+      })),
     upsertWhatsNew: async ({ locale, text }) => {
       events.push(`notes:${locale}:${text}`);
     },
@@ -120,7 +153,7 @@ const fakeApple = (internal = false) => {
     },
     hasBetaReviewSubmission: async () => false,
   };
-  return { client, events };
+  return { client, created, events };
 };
 
 describe("App Store Connect native releases", () => {
@@ -245,16 +278,13 @@ describe("App Store Connect native releases", () => {
       url: "https://upload.example/part",
     });
     expect(requests[4]?.headers.get("x-apple-part")).toBe("1");
-    expect(JSON.parse(requests[5]!.body)).toMatchObject({
-      data: {
-        attributes: {
-          sourceFileChecksums: {
-            file: { algorithm: "SHA_256", hash: "a".repeat(64) },
-          },
-          uploaded: true,
-        },
-      },
+    const commitBody = JSON.parse(requests[5]!.body);
+    expect(commitBody).toMatchObject({
+      data: { attributes: { uploaded: true } },
     });
+    // Apple rejects `sourceFileChecksums` on the completion PATCH (HTTP 409);
+    // it must not be sent.
+    expect(commitBody.data.attributes.sourceFileChecksums).toBeUndefined();
   });
 
   test("allocates a stable build number and uploads a retry-safe TestFlight release", async () => {
@@ -316,5 +346,109 @@ describe("App Store Connect native releases", () => {
       }),
     ).rejects.toBeInstanceOf(AppStoreConnectReleaseError);
     expect(apple.events).not.toContain("review");
+  });
+
+  test("skips assignment for a group that already has access to all builds", async () => {
+    const release = await fixture();
+    const apple = fakeApple(true, true);
+    const publisher = createAppStoreConnectReleasePublisher({
+      client: apple.client,
+      receiptStore: memoryStore(),
+      registry: { publish: async () => release.publication },
+    });
+    const result = await publisher.publish({
+      appStoreConnect: { groups: ["Employees"], submitForReview: false },
+      releaseRoot: release.releaseRoot,
+    });
+    expect(result.appStoreConnect?.receipt.stage).toBe("distributed");
+    expect(apple.events).not.toContain("group:group-1");
+  });
+
+  test("does not reuse a build upload file whose size differs from the artifact", async () => {
+    const release = await fixture();
+    const apple = fakeApple(false, false, {
+      existingFile: { fileSize: release.metadata.bytes + 11, id: "file-stale" },
+    });
+    const publisher = createAppStoreConnectReleasePublisher({
+      client: apple.client,
+      receiptStore: memoryStore(),
+      registry: { publish: async () => release.publication },
+    });
+    const result = await publisher.publish({
+      appStoreConnect: { groups: [], submitForReview: false },
+      releaseRoot: release.releaseRoot,
+    });
+    expect(result.appStoreConnect?.receipt.stage).toBe("distributed");
+    // Stale-sized file must be discarded and a correctly-sized one created.
+    expect(apple.created.buildUploadFiles).toBe(1);
+  });
+
+  test("reuses a build upload file whose size matches the artifact", async () => {
+    const release = await fixture();
+    const apple = fakeApple(false, false, {
+      existingFile: { fileSize: release.metadata.bytes, id: "file-match" },
+    });
+    const publisher = createAppStoreConnectReleasePublisher({
+      client: apple.client,
+      receiptStore: memoryStore(),
+      registry: { publish: async () => release.publication },
+    });
+    await publisher.publish({
+      appStoreConnect: { groups: [], submitForReview: false },
+      releaseRoot: release.releaseRoot,
+    });
+    expect(apple.created.buildUploadFiles).toBe(0);
+  });
+
+  test("replaces a failed receipt upload and its orphaned file", async () => {
+    const release = await fixture();
+    const apple = fakeApple(false, false, { failUploadOnce: true });
+    const receiptStore = memoryStore();
+    const publisher = createAppStoreConnectReleasePublisher({
+      client: apple.client,
+      receiptStore,
+      registry: { publish: async () => release.publication },
+    });
+    const input = {
+      appStoreConnect: { groups: [], submitForReview: false },
+      releaseRoot: release.releaseRoot,
+    };
+    await expect(publisher.publish(input)).rejects.toThrow(
+      "simulated upload failure",
+    );
+    const result = await publisher.publish(input);
+    expect(result.appStoreConnect?.receipt.stage).toBe("distributed");
+    expect(apple.created).toEqual({ buildUploadFiles: 2, buildUploads: 2 });
+  });
+
+  test("counts build numbers from processed builds and in-flight uploads", async () => {
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const responses: Array<Record<string, unknown>> = [
+      { data: [{ attributes: { version: "7" }, id: "b-7", type: "builds" }] },
+      {
+        data: [
+          {
+            attributes: { cfBundleVersion: "8" },
+            id: "u-8",
+            type: "buildUploads",
+          },
+        ],
+      },
+    ];
+    const requestFetch = async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => Response.json(responses.shift() ?? { data: [] });
+    const client = createAppStoreConnectClient({
+      auth: {
+        issuerId: "issuer-1",
+        keyId: "key-1",
+        privateKey: privateKey
+          .export({ format: "pem", type: "pkcs8" })
+          .toString(),
+      },
+      fetch: requestFetch as typeof fetch,
+    });
+    expect(await client.listBuildNumbers({ appId: "app-1" })).toEqual([7, 8]);
   });
 });

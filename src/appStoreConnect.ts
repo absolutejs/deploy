@@ -40,6 +40,7 @@ export type AppStoreConnectBuildUpload = {
 };
 
 export type AppStoreConnectTestFlightGroup = {
+  hasAccessToAllBuilds: boolean;
   id: string;
   isInternal: boolean;
   name: string;
@@ -101,7 +102,7 @@ export type AppStoreConnectClient = {
   findBuildUploadFile(options: {
     buildUploadId: string;
     signal?: AbortSignal;
-  }): Promise<string | null>;
+  }): Promise<{ fileSize: number; id: string } | null>;
   findBuildUpload(options: {
     appId: string;
     buildNumber: number;
@@ -421,14 +422,25 @@ export const createAppStoreConnectClient = (options: {
     },
     listBuildNumbers: async ({ appId, signal }) => {
       signal?.throwIfAborted();
-      const items = await dataList(
+      // Count both processed builds AND in-flight/failed build uploads. A build
+      // number consumed by a failed upload never becomes a /builds resource, so
+      // allocating from /builds alone would hand it out again and collide.
+      const builds = await dataList(
         `/builds?filter[app]=${encodeURIComponent(appId)}&fields[builds]=version&limit=200`,
       );
-      return items
-        .map((item) =>
+      const uploads = await dataList(
+        `/apps/${encodeURIComponent(appId)}/buildUploads?filter[platform]=IOS&fields[buildUploads]=cfBundleVersion&limit=200`,
+      );
+      return [
+        ...builds.map((item) =>
           Number(isRecord(item.attributes) ? item.attributes.version : NaN),
-        )
-        .filter((value) => Number.isSafeInteger(value) && value > 0);
+        ),
+        ...uploads.map((item) =>
+          Number(
+            isRecord(item.attributes) ? item.attributes.cfBundleVersion : NaN,
+          ),
+        ),
+      ].filter((value) => Number.isSafeInteger(value) && value > 0);
     },
     findBuild: async ({ appId, buildNumber, signal }) => {
       signal?.throwIfAborted();
@@ -447,7 +459,11 @@ export const createAppStoreConnectClient = (options: {
       const items = await dataList(
         `/apps/${encodeURIComponent(appId)}/buildUploads?filter[cfBundleVersion]=${buildNumber}&filter[cfBundleShortVersionString]=${encodeURIComponent(marketingVersion)}&filter[platform]=IOS&fields[buildUploads]=state,cfBundleVersion,cfBundleShortVersionString&limit=2`,
       );
-      return items.length ? uploadFrom(items[0]!) : null;
+      // Ignore terminal FAILED uploads so the caller creates a fresh one.
+      const usable = items
+        .map((item) => uploadFrom(item))
+        .find((candidate) => candidate.state !== "FAILED");
+      return usable ?? null;
     },
     createBuildUpload: async ({
       appId,
@@ -510,9 +526,16 @@ export const createAppStoreConnectClient = (options: {
     findBuildUploadFile: async ({ buildUploadId, signal }) => {
       signal?.throwIfAborted();
       const items = await dataList(
-        `/buildUploads/${encodeURIComponent(buildUploadId)}/buildUploadFiles?fields[buildUploadFiles]=fileName&limit=2`,
+        `/buildUploads/${encodeURIComponent(buildUploadId)}/buildUploadFiles?fields[buildUploadFiles]=fileName,fileSize&limit=2`,
       );
-      return items.length ? String(items[0]!.id) : null;
+      if (!items.length) return null;
+      const attributes = isRecord(items[0]!.attributes)
+        ? items[0]!.attributes
+        : {};
+      return {
+        fileSize: Number(attributes.fileSize),
+        id: String(items[0]!.id),
+      };
     },
     uploadBuildFile: async ({ artifactPath, fileId, signal }) => {
       const response = (await request(
@@ -528,24 +551,31 @@ export const createAppStoreConnectClient = (options: {
         throw new AppStoreConnectReleaseError(
           "App Store Connect returned no IPA upload operations",
         );
-      await Promise.all(
-        operations.map(async (operation) => {
-          const offset = Number(operation.offset);
-          const length = Number(operation.length);
-          const headers = new Headers();
-          if (Array.isArray(operation.requestHeaders))
-            for (const entry of operation.requestHeaders)
-              if (isRecord(entry))
-                headers.set(String(entry.name), String(entry.value));
-          const upload = await requestFetch(String(operation.url), {
-            method: String(operation.method),
-            headers,
-            body: Bun.file(artifactPath).slice(offset, offset + length),
-            signal,
-          });
-          if (!upload.ok) throw await responseError(upload);
-        }),
-      );
+      // Apple assembles the package from these operations in order, so upload
+      // them sequentially rather than concurrently. Send a materialized
+      // Uint8Array (not a Bun.file Blob slice) so fetch does not attach its own
+      // Content-Type, which would conflict with the signed operation headers.
+      for (const operation of operations) {
+        const offset = Number(operation.offset);
+        const length = Number(operation.length);
+        const headers = new Headers();
+        if (Array.isArray(operation.requestHeaders))
+          for (const entry of operation.requestHeaders)
+            if (isRecord(entry))
+              headers.set(String(entry.name), String(entry.value));
+        const chunk = new Uint8Array(
+          await Bun.file(artifactPath)
+            .slice(offset, offset + length)
+            .arrayBuffer(),
+        );
+        const upload = await requestFetch(String(operation.url), {
+          method: String(operation.method),
+          headers,
+          body: chunk,
+          signal,
+        });
+        if (!upload.ok) throw await responseError(upload);
+      }
     },
     commitBuildUploadFile: async ({ fileId, sha256, signal }) => {
       await request(`/buildUploadFiles/${encodeURIComponent(fileId)}`, {
@@ -555,11 +585,13 @@ export const createAppStoreConnectClient = (options: {
           data: {
             type: "buildUploadFiles",
             id: fileId,
+            // Apple's Build Upload completion accepts only `uploaded: true`;
+            // sending `sourceFileChecksums` is rejected with HTTP 409. Per-chunk
+            // integrity is enforced by the upload-operation request headers and
+            // Apple's own post-assembly package validation. The `sha256` arg is
+            // retained for the caller's release receipt, not sent here.
             attributes: {
               uploaded: true,
-              sourceFileChecksums: {
-                file: { algorithm: "SHA_256", hash: sha256 },
-              },
             },
           },
         }),
@@ -568,7 +600,7 @@ export const createAppStoreConnectClient = (options: {
     resolveGroups: async ({ appId, groups, signal }) => {
       signal?.throwIfAborted();
       const items = await dataList(
-        `/betaGroups?filter[app]=${encodeURIComponent(appId)}&fields[betaGroups]=name,isInternalGroup&limit=200`,
+        `/betaGroups?filter[app]=${encodeURIComponent(appId)}&fields[betaGroups]=name,isInternalGroup,hasAccessToAllBuilds&limit=200`,
       );
       return groups.map((requested) => {
         const matches = items.filter(
@@ -583,6 +615,7 @@ export const createAppStoreConnectClient = (options: {
         const item = matches[0]!;
         const attributes = item.attributes as Record<string, unknown>;
         return {
+          hasAccessToAllBuilds: attributes.hasAccessToAllBuilds === true,
           id: String(item.id),
           isInternal: attributes.isInternalGroup === true,
           name: String(attributes.name),
@@ -843,6 +876,16 @@ export const createAppStoreConnectReleasePublisher = (
             marketingVersion: metadata.marketingVersion,
             signal: input.signal,
           });
+      // A FAILED build upload is terminal and can never accept another upload;
+      // discard it (and its now-orphaned file id) so a fresh one is created
+      // instead of wedging the retry on the old failure.
+      if (upload?.state === "FAILED") {
+        upload = null;
+        await writeReceipt({
+          buildUploadFileId: undefined,
+          buildUploadId: undefined,
+        });
+      }
       if (!upload)
         upload = await client.createBuildUpload({
           appId: appleAppId,
@@ -859,17 +902,23 @@ export const createAppStoreConnectReleasePublisher = (
       if (!build || build.processingState !== "VALID") {
         let fileId = receipt.buildUploadFileId;
         if (!fileId) {
+          const existing = await client.findBuildUploadFile({
+            buildUploadId: upload.id,
+            signal: input.signal,
+          });
+          // Only reuse an existing upload file when its declared size matches
+          // this artifact. Apple derives the chunk upload operations from the
+          // file's fileSize, so uploading a differently-sized IPA into a stale
+          // file truncates the package and Apple rejects it as corrupt (90168).
           fileId =
-            (await client.findBuildUploadFile({
-              buildUploadId: upload.id,
-              signal: input.signal,
-            })) ??
-            (await client.createBuildUploadFile({
-              buildUploadId: upload.id,
-              bytes: metadata.bytes,
-              fileName: metadata.artifact,
-              signal: input.signal,
-            }));
+            existing && existing.fileSize === metadata.bytes
+              ? existing.id
+              : await client.createBuildUploadFile({
+                  buildUploadId: upload.id,
+                  bytes: metadata.bytes,
+                  fileName: metadata.artifact,
+                  signal: input.signal,
+                });
           await writeReceipt({ buildUploadFileId: fileId });
         }
         if (upload.state === "AWAITING_UPLOAD") {
@@ -910,12 +959,16 @@ export const createAppStoreConnectReleasePublisher = (
           text: note.text,
           signal: input.signal,
         });
+      // Internal groups with "access to all builds" automatically include every
+      // processed build; Apple rejects an explicit assignment to them with HTTP
+      // 422 ("Cannot add internal group to a build"), so skip them.
       for (const group of groups)
-        await client.addBuildToGroup({
-          buildId: build.id,
-          groupId: group.id,
-          signal: input.signal,
-        });
+        if (!group.hasAccessToAllBuilds)
+          await client.addBuildToGroup({
+            buildId: build.id,
+            groupId: group.id,
+            signal: input.signal,
+          });
       if (
         intent.submitForReview &&
         !(await client.hasBetaReviewSubmission({
