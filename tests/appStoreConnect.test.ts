@@ -82,6 +82,7 @@ const fixture = async () => {
 
 type FakeAppleOverrides = {
   existingFile?: { fileSize: number; id: string } | null;
+  failUploadOnce?: boolean;
   findUpload?: AppStoreConnectBuildUpload | null;
   getUpload?: AppStoreConnectBuildUpload;
 };
@@ -93,6 +94,8 @@ const fakeApple = (
 ) => {
   const events: string[] = [];
   const created = { buildUploadFiles: 0, buildUploads: 0 };
+  let failedUpload = false;
+  let failUpload = overrides.failUploadOnce ?? false;
   let uploaded = false;
   const client: AppStoreConnectClient = {
     findAppId: async () => "apple-app-1",
@@ -105,7 +108,11 @@ const fakeApple = (
     getBuildUpload: async () =>
       overrides.getUpload ?? {
         id: "upload-1",
-        state: uploaded ? "COMPLETE" : "AWAITING_UPLOAD",
+        state: failedUpload
+          ? "FAILED"
+          : uploaded
+            ? "COMPLETE"
+            : "AWAITING_UPLOAD",
       },
     createBuildUploadFile: async () => {
       created.buildUploadFiles += 1;
@@ -113,6 +120,11 @@ const fakeApple = (
     },
     findBuildUploadFile: async () => overrides.existingFile ?? null,
     uploadBuildFile: async ({ artifactPath }) => {
+      if (failUpload) {
+        failUpload = false;
+        failedUpload = true;
+        throw new Error("simulated upload failure");
+      }
       events.push(`upload:${path.basename(artifactPath)}`);
     },
     commitBuildUploadFile: async ({ sha256 }) => {
@@ -388,23 +400,25 @@ describe("App Store Connect native releases", () => {
     expect(apple.created.buildUploadFiles).toBe(0);
   });
 
-  test("creates a fresh build upload when the existing one has failed", async () => {
+  test("replaces a failed receipt upload and its orphaned file", async () => {
     const release = await fixture();
-    const apple = fakeApple(false, false, {
-      findUpload: { id: "upload-failed", state: "FAILED" },
-    });
+    const apple = fakeApple(false, false, { failUploadOnce: true });
+    const receiptStore = memoryStore();
     const publisher = createAppStoreConnectReleasePublisher({
       client: apple.client,
-      receiptStore: memoryStore(),
+      receiptStore,
       registry: { publish: async () => release.publication },
     });
-    const result = await publisher.publish({
+    const input = {
       appStoreConnect: { groups: [], submitForReview: false },
       releaseRoot: release.releaseRoot,
-    });
+    };
+    await expect(publisher.publish(input)).rejects.toThrow(
+      "simulated upload failure",
+    );
+    const result = await publisher.publish(input);
     expect(result.appStoreConnect?.receipt.stage).toBe("distributed");
-    // A terminal FAILED upload must not wedge the retry; a new one is created.
-    expect(apple.created.buildUploads).toBe(1);
+    expect(apple.created).toEqual({ buildUploadFiles: 2, buildUploads: 2 });
   });
 
   test("counts build numbers from processed builds and in-flight uploads", async () => {
