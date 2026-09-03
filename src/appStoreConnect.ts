@@ -102,7 +102,7 @@ export type AppStoreConnectClient = {
   findBuildUploadFile(options: {
     buildUploadId: string;
     signal?: AbortSignal;
-  }): Promise<string | null>;
+  }): Promise<{ fileSize: number; id: string } | null>;
   findBuildUpload(options: {
     appId: string;
     buildNumber: number;
@@ -422,14 +422,25 @@ export const createAppStoreConnectClient = (options: {
     },
     listBuildNumbers: async ({ appId, signal }) => {
       signal?.throwIfAborted();
-      const items = await dataList(
+      // Count both processed builds AND in-flight/failed build uploads. A build
+      // number consumed by a failed upload never becomes a /builds resource, so
+      // allocating from /builds alone would hand it out again and collide.
+      const builds = await dataList(
         `/builds?filter[app]=${encodeURIComponent(appId)}&fields[builds]=version&limit=200`,
       );
-      return items
-        .map((item) =>
+      const uploads = await dataList(
+        `/apps/${encodeURIComponent(appId)}/buildUploads?filter[platform]=IOS&fields[buildUploads]=cfBundleVersion&limit=200`,
+      );
+      return [
+        ...builds.map((item) =>
           Number(isRecord(item.attributes) ? item.attributes.version : NaN),
-        )
-        .filter((value) => Number.isSafeInteger(value) && value > 0);
+        ),
+        ...uploads.map((item) =>
+          Number(
+            isRecord(item.attributes) ? item.attributes.cfBundleVersion : NaN,
+          ),
+        ),
+      ].filter((value) => Number.isSafeInteger(value) && value > 0);
     },
     findBuild: async ({ appId, buildNumber, signal }) => {
       signal?.throwIfAborted();
@@ -448,7 +459,11 @@ export const createAppStoreConnectClient = (options: {
       const items = await dataList(
         `/apps/${encodeURIComponent(appId)}/buildUploads?filter[cfBundleVersion]=${buildNumber}&filter[cfBundleShortVersionString]=${encodeURIComponent(marketingVersion)}&filter[platform]=IOS&fields[buildUploads]=state,cfBundleVersion,cfBundleShortVersionString&limit=2`,
       );
-      return items.length ? uploadFrom(items[0]!) : null;
+      // Ignore terminal FAILED uploads so the caller creates a fresh one.
+      const usable = items
+        .map((item) => uploadFrom(item))
+        .find((candidate) => candidate.state !== "FAILED");
+      return usable ?? null;
     },
     createBuildUpload: async ({
       appId,
@@ -511,9 +526,16 @@ export const createAppStoreConnectClient = (options: {
     findBuildUploadFile: async ({ buildUploadId, signal }) => {
       signal?.throwIfAborted();
       const items = await dataList(
-        `/buildUploads/${encodeURIComponent(buildUploadId)}/buildUploadFiles?fields[buildUploadFiles]=fileName&limit=2`,
+        `/buildUploads/${encodeURIComponent(buildUploadId)}/buildUploadFiles?fields[buildUploadFiles]=fileName,fileSize&limit=2`,
       );
-      return items.length ? String(items[0]!.id) : null;
+      if (!items.length) return null;
+      const attributes = isRecord(items[0]!.attributes)
+        ? items[0]!.attributes
+        : {};
+      return {
+        fileSize: Number(attributes.fileSize),
+        id: String(items[0]!.id),
+      };
     },
     uploadBuildFile: async ({ artifactPath, fileId, signal }) => {
       const response = (await request(
@@ -854,6 +876,16 @@ export const createAppStoreConnectReleasePublisher = (
             marketingVersion: metadata.marketingVersion,
             signal: input.signal,
           });
+      // A FAILED build upload is terminal and can never accept another upload;
+      // discard it (and its now-orphaned file id) so a fresh one is created
+      // instead of wedging the retry on the old failure.
+      if (upload?.state === "FAILED") {
+        upload = null;
+        await writeReceipt({
+          buildUploadFileId: undefined,
+          buildUploadId: undefined,
+        });
+      }
       if (!upload)
         upload = await client.createBuildUpload({
           appId: appleAppId,
@@ -870,17 +902,23 @@ export const createAppStoreConnectReleasePublisher = (
       if (!build || build.processingState !== "VALID") {
         let fileId = receipt.buildUploadFileId;
         if (!fileId) {
+          const existing = await client.findBuildUploadFile({
+            buildUploadId: upload.id,
+            signal: input.signal,
+          });
+          // Only reuse an existing upload file when its declared size matches
+          // this artifact. Apple derives the chunk upload operations from the
+          // file's fileSize, so uploading a differently-sized IPA into a stale
+          // file truncates the package and Apple rejects it as corrupt (90168).
           fileId =
-            (await client.findBuildUploadFile({
-              buildUploadId: upload.id,
-              signal: input.signal,
-            })) ??
-            (await client.createBuildUploadFile({
-              buildUploadId: upload.id,
-              bytes: metadata.bytes,
-              fileName: metadata.artifact,
-              signal: input.signal,
-            }));
+            existing && existing.fileSize === metadata.bytes
+              ? existing.id
+              : await client.createBuildUploadFile({
+                  buildUploadId: upload.id,
+                  bytes: metadata.bytes,
+                  fileName: metadata.artifact,
+                  signal: input.signal,
+                });
           await writeReceipt({ buildUploadFileId: fileId });
         }
         if (upload.state === "AWAITING_UPLOAD") {
