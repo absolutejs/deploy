@@ -79,7 +79,7 @@ const fixture = async () => {
   return { metadata, publication, releaseRoot };
 };
 
-const fakeApple = (internal = false) => {
+const fakeApple = (internal = false, allBuilds = false) => {
   const events: string[] = [];
   let uploaded = false;
   const client: AppStoreConnectClient = {
@@ -108,7 +108,12 @@ const fakeApple = (internal = false) => {
         ? { id: "build-1", processingState: "VALID", version: "8" }
         : null,
     resolveGroups: async ({ groups }) =>
-      groups.map((name) => ({ id: "group-1", isInternal: internal, name })),
+      groups.map((name) => ({
+        hasAccessToAllBuilds: allBuilds,
+        id: "group-1",
+        isInternal: internal,
+        name,
+      })),
     upsertWhatsNew: async ({ locale, text }) => {
       events.push(`notes:${locale}:${text}`);
     },
@@ -245,16 +250,13 @@ describe("App Store Connect native releases", () => {
       url: "https://upload.example/part",
     });
     expect(requests[4]?.headers.get("x-apple-part")).toBe("1");
-    expect(JSON.parse(requests[5]!.body)).toMatchObject({
-      data: {
-        attributes: {
-          sourceFileChecksums: {
-            file: { algorithm: "SHA_256", hash: "a".repeat(64) },
-          },
-          uploaded: true,
-        },
-      },
+    const commitBody = JSON.parse(requests[5]!.body);
+    expect(commitBody).toMatchObject({
+      data: { attributes: { uploaded: true } },
     });
+    // Apple rejects `sourceFileChecksums` on the completion PATCH (HTTP 409);
+    // it must not be sent.
+    expect(commitBody.data.attributes.sourceFileChecksums).toBeUndefined();
   });
 
   test("allocates a stable build number and uploads a retry-safe TestFlight release", async () => {
@@ -316,5 +318,21 @@ describe("App Store Connect native releases", () => {
       }),
     ).rejects.toBeInstanceOf(AppStoreConnectReleaseError);
     expect(apple.events).not.toContain("review");
+  });
+
+  test("skips assignment for a group that already has access to all builds", async () => {
+    const release = await fixture();
+    const apple = fakeApple(true, true);
+    const publisher = createAppStoreConnectReleasePublisher({
+      client: apple.client,
+      receiptStore: memoryStore(),
+      registry: { publish: async () => release.publication },
+    });
+    const result = await publisher.publish({
+      appStoreConnect: { groups: ["Employees"], submitForReview: false },
+      releaseRoot: release.releaseRoot,
+    });
+    expect(result.appStoreConnect?.receipt.stage).toBe("distributed");
+    expect(apple.events).not.toContain("group:group-1");
   });
 });

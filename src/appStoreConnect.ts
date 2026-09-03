@@ -40,6 +40,7 @@ export type AppStoreConnectBuildUpload = {
 };
 
 export type AppStoreConnectTestFlightGroup = {
+  hasAccessToAllBuilds: boolean;
   id: string;
   isInternal: boolean;
   name: string;
@@ -528,24 +529,31 @@ export const createAppStoreConnectClient = (options: {
         throw new AppStoreConnectReleaseError(
           "App Store Connect returned no IPA upload operations",
         );
-      await Promise.all(
-        operations.map(async (operation) => {
-          const offset = Number(operation.offset);
-          const length = Number(operation.length);
-          const headers = new Headers();
-          if (Array.isArray(operation.requestHeaders))
-            for (const entry of operation.requestHeaders)
-              if (isRecord(entry))
-                headers.set(String(entry.name), String(entry.value));
-          const upload = await requestFetch(String(operation.url), {
-            method: String(operation.method),
-            headers,
-            body: Bun.file(artifactPath).slice(offset, offset + length),
-            signal,
-          });
-          if (!upload.ok) throw await responseError(upload);
-        }),
-      );
+      // Apple assembles the package from these operations in order, so upload
+      // them sequentially rather than concurrently. Send a materialized
+      // Uint8Array (not a Bun.file Blob slice) so fetch does not attach its own
+      // Content-Type, which would conflict with the signed operation headers.
+      for (const operation of operations) {
+        const offset = Number(operation.offset);
+        const length = Number(operation.length);
+        const headers = new Headers();
+        if (Array.isArray(operation.requestHeaders))
+          for (const entry of operation.requestHeaders)
+            if (isRecord(entry))
+              headers.set(String(entry.name), String(entry.value));
+        const chunk = new Uint8Array(
+          await Bun.file(artifactPath)
+            .slice(offset, offset + length)
+            .arrayBuffer(),
+        );
+        const upload = await requestFetch(String(operation.url), {
+          method: String(operation.method),
+          headers,
+          body: chunk,
+          signal,
+        });
+        if (!upload.ok) throw await responseError(upload);
+      }
     },
     commitBuildUploadFile: async ({ fileId, sha256, signal }) => {
       await request(`/buildUploadFiles/${encodeURIComponent(fileId)}`, {
@@ -555,11 +563,13 @@ export const createAppStoreConnectClient = (options: {
           data: {
             type: "buildUploadFiles",
             id: fileId,
+            // Apple's Build Upload completion accepts only `uploaded: true`;
+            // sending `sourceFileChecksums` is rejected with HTTP 409. Per-chunk
+            // integrity is enforced by the upload-operation request headers and
+            // Apple's own post-assembly package validation. The `sha256` arg is
+            // retained for the caller's release receipt, not sent here.
             attributes: {
               uploaded: true,
-              sourceFileChecksums: {
-                file: { algorithm: "SHA_256", hash: sha256 },
-              },
             },
           },
         }),
@@ -568,7 +578,7 @@ export const createAppStoreConnectClient = (options: {
     resolveGroups: async ({ appId, groups, signal }) => {
       signal?.throwIfAborted();
       const items = await dataList(
-        `/betaGroups?filter[app]=${encodeURIComponent(appId)}&fields[betaGroups]=name,isInternalGroup&limit=200`,
+        `/betaGroups?filter[app]=${encodeURIComponent(appId)}&fields[betaGroups]=name,isInternalGroup,hasAccessToAllBuilds&limit=200`,
       );
       return groups.map((requested) => {
         const matches = items.filter(
@@ -583,6 +593,7 @@ export const createAppStoreConnectClient = (options: {
         const item = matches[0]!;
         const attributes = item.attributes as Record<string, unknown>;
         return {
+          hasAccessToAllBuilds: attributes.hasAccessToAllBuilds === true,
           id: String(item.id),
           isInternal: attributes.isInternalGroup === true,
           name: String(attributes.name),
@@ -910,12 +921,16 @@ export const createAppStoreConnectReleasePublisher = (
           text: note.text,
           signal: input.signal,
         });
+      // Internal groups with "access to all builds" automatically include every
+      // processed build; Apple rejects an explicit assignment to them with HTTP
+      // 422 ("Cannot add internal group to a build"), so skip them.
       for (const group of groups)
-        await client.addBuildToGroup({
-          buildId: build.id,
-          groupId: group.id,
-          signal: input.signal,
-        });
+        if (!group.hasAccessToAllBuilds)
+          await client.addBuildToGroup({
+            buildId: build.id,
+            groupId: group.id,
+            signal: input.signal,
+          });
       if (
         intent.submitForReview &&
         !(await client.hasBetaReviewSubmission({
