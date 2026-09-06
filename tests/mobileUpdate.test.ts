@@ -440,9 +440,10 @@ describe("mobile update registry", () => {
       "expo-platform": "ios",
       "expo-protocol-version": "1",
       "expo-runtime-version": release.manifest.runtimeFingerprint,
+      "expo-extra-params":
+        'absolute-installation="11111111-1111-4111-8111-111111111111"',
       "x-absolute-mobile-app": release.manifest.appId,
       "x-absolute-mobile-channel": release.manifest.channel,
-      "x-absolute-mobile-installation": "11111111-1111-4111-8111-111111111111",
     };
     const signedHeaders = {
       ...headers,

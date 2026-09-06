@@ -868,9 +868,10 @@ type ExpoCodeSigning =
 const expoSignatureExpectation = (value: string) => {
   const fields = new Map<string, string | true>();
   for (const raw of value.split(",")) {
-    const match = /^\s*([a-z][a-z0-9_-]*)(?:=(\?1|\?0|"[^"\\]*"|[a-z0-9._-]+))?\s*$/u.exec(
-      raw,
-    );
+    const match =
+      /^\s*([a-z][a-z0-9_-]*)(?:=(\?1|\?0|"[^"\\]*"|[a-z0-9._-]+))?\s*$/u.exec(
+        raw,
+      );
     if (!match || fields.has(match[1]!))
       throw new MobileUpdateRegistryError(
         "Expo code-signing expectation is invalid",
@@ -887,6 +888,23 @@ const expoSignatureExpectation = (value: string) => {
   }
 
   return fields;
+};
+
+const expoExtraParam = (request: Request, key: string) => {
+  const value = request.headers.get("expo-extra-params");
+  if (!value) return null;
+  for (const raw of value.split(",")) {
+    const match =
+      /^\s*([a-z][a-z0-9_.*-]*)=(?:"((?:[^"\\]|\\["\\])*)"|([^\s,]+))\s*$/u.exec(
+        raw,
+      );
+    if (!match || match[1] !== key) continue;
+    return match[2] !== undefined
+      ? match[2].replace(/\\(["\\])/gu, "$1")
+      : (match[3] ?? null);
+  }
+
+  return null;
 };
 
 const requestedExpoSignature = (
@@ -912,11 +930,12 @@ const requestedExpoSignature = (
       "Requested Expo code-signing parameters are unsupported",
     );
 
-  const selected = typeof keyId === "string"
-    ? codeSigning.get(keyId)
-    : codeSigning.size === 1
-      ? codeSigning.values().next().value
-      : undefined;
+  const selected =
+    typeof keyId === "string"
+      ? codeSigning.get(keyId)
+      : codeSigning.size === 1
+        ? codeSigning.values().next().value
+        : undefined;
   if (!selected)
     throw new MobileUpdateRegistryError(
       "Requested Expo code-signing key is unavailable",
@@ -1023,9 +1042,10 @@ export const createMobileUpdateHandler = (options: {
         );
       const appId = request.headers.get("x-absolute-mobile-app");
       const channel = request.headers.get("x-absolute-mobile-channel");
-      const installationId = request.headers.get(
-        "x-absolute-mobile-installation",
-      );
+      const installationId = expoProtocol
+        ? (expoExtraParam(request, "absolute-installation") ??
+          request.headers.get("x-absolute-mobile-installation"))
+        : request.headers.get("x-absolute-mobile-installation");
       const runtimeFingerprint = expoProtocol
         ? request.headers.get("expo-runtime-version")
         : request.headers.get("x-absolute-mobile-runtime");
