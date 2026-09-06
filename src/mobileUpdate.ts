@@ -59,6 +59,8 @@ export type MobileUpdateManifest = {
 };
 
 export type MobileUpdateChannel = {
+  activationId?: string;
+  activatedAt?: string;
   appId: string;
   channel: string;
   fallbackReleaseId?: string;
@@ -92,6 +94,16 @@ export type MobileUpdateRollback = {
   stage: "rolled-back";
 };
 
+export type MobileUpdateResolution =
+  | { status: "empty" | "incompatible" }
+  | {
+      activationId?: string;
+      activatedAt?: string;
+      manifest: MobileUpdateManifest;
+      manifestKey: string;
+      status: "selected";
+    };
+
 export type MobileUpdateRegistry = {
   publishUpdate(input: {
     manifest: MobileUpdateManifest;
@@ -118,6 +130,12 @@ export type MobileUpdateRegistry = {
     installationId: string;
     runtimeFingerprint: string;
   }): Promise<{ manifest: MobileUpdateManifest; manifestKey: string } | null>;
+  resolveUpdateState?(input: {
+    appId: string;
+    channel: string;
+    installationId: string;
+    runtimeFingerprint: string;
+  }): Promise<MobileUpdateResolution>;
   readUpdateFile(input: {
     appId: string;
     path: string;
@@ -412,11 +430,18 @@ const parseChannel = (value: unknown): MobileUpdateChannel => {
         !RELEASE.test(value.releaseId))) ||
     (value.fallbackReleaseId !== undefined &&
       (typeof value.fallbackReleaseId !== "string" ||
-        !RELEASE.test(value.fallbackReleaseId)))
+        !RELEASE.test(value.fallbackReleaseId))) ||
+    (value.activationId !== undefined &&
+      (typeof value.activationId !== "string" ||
+        !HASH.test(value.activationId))) ||
+    (value.activatedAt !== undefined && !iso(value.activatedAt)) ||
+    (value.activationId === undefined) !== (value.activatedAt === undefined)
   )
     throw new MobileUpdateRegistryError("Mobile update channel is invalid");
 
   return {
+    ...(value.activationId ? { activationId: value.activationId } : {}),
+    ...(value.activatedAt ? { activatedAt: value.activatedAt } : {}),
     appId,
     channel,
     ...(value.fallbackReleaseId
@@ -590,6 +615,45 @@ export const createMobileUpdateRegistry = (
       stage: "promoted",
     };
   };
+  const resolveUpdateState = async (input: {
+    appId: string;
+    channel: string;
+    installationId: string;
+    runtimeFingerprint: string;
+  }): Promise<MobileUpdateResolution> => {
+    const channel = await readChannel(input.appId, input.channel);
+    if (!channel?.releaseId) return { status: "empty" };
+    const selected = rolloutMember({
+      appId: input.appId,
+      channel: input.channel,
+      installationId: input.installationId,
+      releaseId: channel.releaseId,
+      rollout: channel.rollout,
+    })
+      ? channel.releaseId
+      : channel.fallbackReleaseId;
+    if (!selected) return { status: "empty" };
+    const release = await readManifest(input.appId, selected);
+    if (
+      !release ||
+      release.manifest.runtimeFingerprint !== input.runtimeFingerprint
+    )
+      return { status: "incompatible" };
+
+    return {
+      ...(selected === channel.releaseId &&
+      channel.activationId &&
+      channel.activatedAt
+        ? {
+            activationId: channel.activationId,
+            activatedAt: channel.activatedAt,
+          }
+        : {}),
+      manifest: release.manifest,
+      manifestKey: release.key,
+      status: "selected",
+    };
+  };
 
   return {
     publishUpdate: async (input) => {
@@ -690,8 +754,19 @@ export const createMobileUpdateRegistry = (
             "Mobile rollback release was not published",
           );
       }
+      const activatedAt = clock().toISOString();
       await writeChannel(
         {
+          ...(input.releaseId
+            ? {
+                activationId: digest(
+                  new TextEncoder().encode(
+                    `${input.appId}\0${input.channel}\0${input.releaseId}\0${activatedAt}`,
+                  ),
+                ),
+                activatedAt,
+              }
+            : {}),
           appId: input.appId,
           channel: input.channel,
           ...(existing.releaseId
@@ -711,27 +786,13 @@ export const createMobileUpdateRegistry = (
       };
     },
     resolveUpdate: async (input) => {
-      const channel = await readChannel(input.appId, input.channel);
-      if (!channel?.releaseId) return null;
-      const selected = rolloutMember({
-        appId: input.appId,
-        channel: input.channel,
-        installationId: input.installationId,
-        releaseId: channel.releaseId,
-        rollout: channel.rollout,
-      })
-        ? channel.releaseId
-        : channel.fallbackReleaseId;
-      if (!selected) return null;
-      const release = await readManifest(input.appId, selected);
-      if (
-        !release ||
-        release.manifest.runtimeFingerprint !== input.runtimeFingerprint
-      )
-        return null;
+      const resolution = await resolveUpdateState(input);
 
-      return { manifest: release.manifest, manifestKey: release.key };
+      return resolution.status === "selected"
+        ? { manifest: resolution.manifest, manifestKey: resolution.manifestKey }
+        : null;
     },
+    resolveUpdateState,
     readUpdateFile: async (input) => {
       const release = await readManifest(input.appId, input.releaseId);
       if (!release) return null;
@@ -763,7 +824,9 @@ export const createMobileUpdateRegistry = (
 };
 
 const expoUpdateId = (releaseId: string) => {
-  const hash = releaseId.slice("amu_".length, "amu_".length + 32);
+  const hash = RELEASE.test(releaseId)
+    ? releaseId.slice("amu_".length, "amu_".length + 32)
+    : createHash("sha256").update(releaseId).digest("hex").slice(0, 32);
 
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
 };
@@ -1056,12 +1119,24 @@ export const createMobileUpdateHandler = (options: {
         !runtimeFingerprint
       )
         return new Response(null, { status: 400 });
-      const selected = await options.registry.resolveUpdate({
-        appId,
-        channel,
-        installationId,
-        runtimeFingerprint,
-      });
+      const resolution = options.registry.resolveUpdateState
+        ? await options.registry.resolveUpdateState({
+            appId,
+            channel,
+            installationId,
+            runtimeFingerprint,
+          })
+        : undefined;
+      const selected = resolution
+        ? resolution.status === "selected"
+          ? resolution
+          : null
+        : await options.registry.resolveUpdate({
+            appId,
+            channel,
+            installationId,
+            runtimeFingerprint,
+          });
       if (expoProtocol) {
         let requestedCodeSigning: ExpoCodeSigning | undefined;
         try {
@@ -1080,12 +1155,19 @@ export const createMobileUpdateHandler = (options: {
             { status: expoCodeSigning ? 406 : 400 },
           );
         }
-        if (!selected)
+        if (!selected) {
+          if (resolution?.status === "incompatible")
+            return new Response(null, { status: 204 });
           return expoRollbackResponse(request, requestedCodeSigning);
+        }
         const platform = request.headers.get("expo-platform");
         if (platform !== "android" && platform !== "ios")
           return new Response(null, { status: 400 });
-        const updateId = expoUpdateId(selected.manifest.releaseId);
+        const updateId = expoUpdateId(
+          (resolution?.status === "selected"
+            ? resolution.activationId
+            : undefined) ?? selected.manifest.releaseId,
+        );
         if (request.headers.get("expo-current-update-id") === updateId)
           return new Response(null, { status: 204 });
         const descriptorFile = await options.registry.readUpdateFile({
@@ -1121,7 +1203,10 @@ export const createMobileUpdateHandler = (options: {
         };
         const manifest = JSON.stringify({
           assets: platformUpdate.assets.map((asset) => protocolAsset(asset)),
-          createdAt: selected.manifest.createdAt,
+          createdAt:
+            (resolution?.status === "selected"
+              ? resolution.activatedAt
+              : undefined) ?? selected.manifest.createdAt,
           extra: {
             absolutejs: {
               channel: selected.manifest.channel,

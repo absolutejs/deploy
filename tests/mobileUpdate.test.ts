@@ -521,6 +521,42 @@ describe("mobile update registry", () => {
     );
     expect(ambiguousSigning.status).toBe(406);
 
+    const incompatible = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        {
+          headers: {
+            ...signedHeaders,
+            "expo-current-update-id": manifest.id,
+            "expo-runtime-version": "f".repeat(64),
+          },
+        },
+      ),
+    );
+    expect(incompatible.status).toBe(204);
+
+    await registry.rollbackUpdate({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      releaseId: release.manifest.releaseId,
+    });
+    const republishedRollback = await handler(
+      new Request(
+        "https://api.example.com/__absolute/mobile/updates/production/update.json",
+        {
+          headers: {
+            ...signedHeaders,
+            "expo-current-update-id": manifest.id,
+          },
+        },
+      ),
+    );
+    const republishedManifest = await republishedRollback.json();
+    expect(republishedManifest.id).not.toBe(manifest.id);
+    expect(republishedManifest.extra.absolutejs.releaseId).toBe(
+      release.manifest.releaseId,
+    );
+
     await registry.rollbackUpdate({
       appId: release.manifest.appId,
       channel: release.manifest.channel,
