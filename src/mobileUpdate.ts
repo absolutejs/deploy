@@ -696,13 +696,14 @@ export const createMobileUpdateRegistry = (
               cacheControl: "public, max-age=31536000, immutable",
               contentType: "application/octet-stream",
               maxBytes: file.bytes,
-              metadata: { releaseId: manifest.releaseId, sha256: file.sha256 },
+              metadata: { releaseid: manifest.releaseId, sha256: file.sha256 },
               signal: input.signal,
             });
           } else if (
             stored.size !== file.bytes ||
             stored.metadata?.sha256 !== file.sha256 ||
-            stored.metadata?.releaseId !== manifest.releaseId
+            (stored.metadata?.releaseid ?? stored.metadata?.releaseId) !==
+              manifest.releaseId
           )
             throw new MobileUpdateRegistryError(
               "Stored mobile update file identity changed",
@@ -713,7 +714,7 @@ export const createMobileUpdateRegistry = (
           cacheControl: "public, max-age=31536000, immutable",
           contentType: "application/json",
           maxBytes: bytes.byteLength,
-          metadata: { releaseId: manifest.releaseId, sha256: digest(bytes) },
+          metadata: { releaseid: manifest.releaseId, sha256: digest(bytes) },
           signal: input.signal,
         });
         if (!(await readManifest(manifest.appId, manifest.releaseId)))
@@ -811,7 +812,8 @@ export const createMobileUpdateRegistry = (
         bytes.byteLength !== file.bytes ||
         head.size !== file.bytes ||
         head.metadata?.sha256 !== file.sha256 ||
-        head.metadata?.releaseId !== release.manifest.releaseId ||
+        (head.metadata?.releaseid ?? head.metadata?.releaseId) !==
+          release.manifest.releaseId ||
         digest(bytes) !== file.sha256
       )
         throw new MobileUpdateRegistryError(

@@ -53,7 +53,7 @@ afterEach(async () => {
   );
 });
 
-const memoryStore = () => {
+const memoryStore = (settings: { lowercaseMetadata?: boolean } = {}) => {
   const objects = new Map<
     string,
     { bytes: Uint8Array; metadata?: Record<string, string> }
@@ -74,7 +74,18 @@ const memoryStore = () => {
           : body instanceof Uint8Array
             ? body
             : new Uint8Array(await new Response(body).arrayBuffer());
-      objects.set(key, { bytes, metadata: options?.metadata });
+      objects.set(key, {
+        bytes,
+        metadata:
+          settings.lowercaseMetadata && options?.metadata
+            ? Object.fromEntries(
+                Object.entries(options.metadata).map(([name, value]) => [
+                  name.toLowerCase(),
+                  value,
+                ]),
+              )
+            : options?.metadata,
+      });
     },
   };
 
@@ -354,6 +365,28 @@ describe("mobile update registry", () => {
         rollout: 0.05,
       }),
     ).rejects.toBeInstanceOf(MobileUpdateRegistryError);
+  });
+
+  test("uses S3-compatible lowercase metadata for immutable files", async () => {
+    const memory = memoryStore({ lowercaseMetadata: true });
+    const release = await fixture("lowercase-metadata");
+    const registry = createMobileUpdateRegistry({
+      publicKeys,
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 1,
+    });
+
+    expect(
+      await registry.readUpdateFile({
+        appId: release.manifest.appId,
+        path: "index.html",
+        releaseId: release.manifest.releaseId,
+      }),
+    ).not.toBeNull();
   });
 
   test("rejects a modified signature before storage", async () => {
