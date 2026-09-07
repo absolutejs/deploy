@@ -64,13 +64,24 @@ export type NativeReleaseChannel = {
 
 export type NativeReleaseBlobObject = {
   key: string;
+  lastModified?: number;
   metadata?: Record<string, string>;
   size: number;
 };
 
 export type NativeReleaseBlobStore = {
+  delete?: (key: string) => Promise<void>;
   get: (key: string) => Promise<Uint8Array | null>;
   head: (key: string) => Promise<NativeReleaseBlobObject | null>;
+  list?: (options?: {
+    cursor?: string;
+    limit?: number;
+    prefix?: string;
+  }) => Promise<{
+    cursor?: string;
+    objects: NativeReleaseBlobObject[];
+    truncated: boolean;
+  }>;
   put: (
     key: string,
     body: ReadableStream<Uint8Array> | Uint8Array | string,

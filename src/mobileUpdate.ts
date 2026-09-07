@@ -14,6 +14,10 @@ export const MOBILE_UPDATE_REGISTRY_FORMAT = 1 as const;
 const DEFAULT_PREFIX = "absolutejs/mobile-updates";
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MIN_AGE_MS = 30 * DAY_MS;
+const DEFAULT_GRACE_PERIOD_MS = 7 * DAY_MS;
+const DEFAULT_RETAIN_RECENT = 5;
 const HASH = /^[a-f0-9]{64}$/;
 const RELEASE = /^amu_[a-f0-9]{64}$/;
 const APP_ID = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
@@ -94,6 +98,52 @@ export type MobileUpdateRollback = {
   stage: "rolled-back";
 };
 
+export type MobileUpdateStorageRelease = {
+  bytes: number;
+  channel: string;
+  createdAt: string;
+  markedAt?: string;
+  objectCount: number;
+  protectedBy: ("active" | "age" | "fallback" | "recent")[];
+  releaseId: string;
+};
+
+export type MobileUpdateStorageReport = {
+  appId: string;
+  channelCount: number;
+  reclaimableBytes: number;
+  releaseBytes: number;
+  releaseCount: number;
+  releases: MobileUpdateStorageRelease[];
+  totalBytes: number;
+  totalObjectCount: number;
+  untrackedBytes: number;
+};
+
+export type MobileUpdatePruneResult = MobileUpdateStorageReport & {
+  dryRun: boolean;
+  marked: string[];
+  reclaimedBytes: number;
+  restored: string[];
+  swept: string[];
+};
+
+export type MobileUpdateRetentionOptions = {
+  appId: string;
+  /** Minimum release age before collection. Defaults to 30 days. */
+  minAgeMs?: number;
+  /** Number of newest releases retained per channel. Defaults to 5. */
+  retainRecent?: number;
+  signal?: AbortSignal;
+};
+
+export type MobileUpdatePruneOptions = MobileUpdateRetentionOptions & {
+  /** Apply marks and sweeps. Omit for a read-only preview. */
+  apply?: boolean;
+  /** Time between marking and deletion. Defaults to 7 days. */
+  gracePeriodMs?: number;
+};
+
 export type MobileUpdateResolution =
   | { status: "empty" | "incompatible" }
   | {
@@ -105,6 +155,12 @@ export type MobileUpdateResolution =
     };
 
 export type MobileUpdateRegistry = {
+  inspectUpdateStorage(
+    input: MobileUpdateRetentionOptions,
+  ): Promise<MobileUpdateStorageReport>;
+  pruneUpdates(
+    input: MobileUpdatePruneOptions,
+  ): Promise<MobileUpdatePruneResult>;
   publishUpdate(input: {
     manifest: MobileUpdateManifest;
     releaseDirectory: string;
@@ -515,6 +571,8 @@ export const createMobileUpdateRegistry = (
     manifest: Pick<MobileUpdateManifest, "appId" | "releaseId">,
     file: MobileUpdateFile,
   ) => `${releaseRoot(manifest)}/files/${file.path}`;
+  const tombstoneKey = (appId: string, releaseId: string) =>
+    `${root(appId)}/gc/${releaseId}.json`;
   const channelKey = (appId: string, channel: string) => {
     if (!APP_ID.test(appId) || !NAME.test(channel))
       throw new MobileUpdateRegistryError(
@@ -556,6 +614,16 @@ export const createMobileUpdateRegistry = (
 
     return value;
   };
+  const assertNotMarked = async (appId: string, releaseId: string) => {
+    if (!APP_ID.test(appId) || !RELEASE.test(releaseId))
+      throw new MobileUpdateRegistryError(
+        "Mobile update release identity is invalid",
+      );
+    if (await options.store.head(tombstoneKey(appId, releaseId)))
+      throw new MobileUpdateRegistryError(
+        "Mobile update release is marked for collection. Increase retention and apply garbage collection to restore it before promotion",
+      );
+  };
   const writeChannel = async (
     input: Omit<MobileUpdateChannel, "format" | "promotedAt">,
     signal?: AbortSignal,
@@ -586,6 +654,7 @@ export const createMobileUpdateRegistry = (
     input.signal?.throwIfAborted();
     if (input.rollout <= 0 || input.rollout > 1)
       throw new MobileUpdateRegistryError("Mobile update rollout is invalid");
+    await assertNotMarked(input.appId, input.releaseId);
     const release = await readManifest(input.appId, input.releaseId);
     if (!release || release.manifest.channel !== input.channel)
       throw new MobileUpdateRegistryError(
@@ -655,11 +724,291 @@ export const createMobileUpdateRegistry = (
     };
   };
 
+  const retentionValues = (input: MobileUpdateRetentionOptions) => {
+    if (!APP_ID.test(input.appId))
+      throw new MobileUpdateRegistryError("Mobile update appId is invalid");
+    const retainRecent = input.retainRecent ?? DEFAULT_RETAIN_RECENT;
+    const minAgeMs = input.minAgeMs ?? DEFAULT_MIN_AGE_MS;
+    if (!Number.isSafeInteger(retainRecent) || retainRecent < 0)
+      throw new MobileUpdateRegistryError(
+        "Mobile update retained release count is invalid",
+      );
+    if (!Number.isSafeInteger(minAgeMs) || minAgeMs < 0)
+      throw new MobileUpdateRegistryError(
+        "Mobile update minimum release age is invalid",
+      );
+
+    return { minAgeMs, retainRecent };
+  };
+  const listObjects = async (appId: string, signal?: AbortSignal) => {
+    const list = options.store.list;
+    if (!list)
+      throw new MobileUpdateRegistryError(
+        "Mobile update storage does not support lifecycle listing",
+      );
+    const objects: Awaited<ReturnType<typeof list>>["objects"] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      signal?.throwIfAborted();
+      const page = await list({
+        ...(cursor ? { cursor } : {}),
+        prefix: `${root(appId)}/`,
+      });
+      objects.push(...page.objects);
+      if (!page.truncated) break;
+      if (!page.cursor || cursors.has(page.cursor))
+        throw new MobileUpdateRegistryError(
+          "Mobile update storage returned an invalid lifecycle cursor",
+        );
+      cursors.add(page.cursor);
+      cursor = page.cursor;
+    } while (true);
+
+    return objects;
+  };
+  const inventory = async (
+    input: MobileUpdateRetentionOptions,
+  ): Promise<{
+    objectKeysByRelease: Map<string, string[]>;
+    report: MobileUpdateStorageReport;
+  }> => {
+    const { minAgeMs, retainRecent } = retentionValues(input);
+    const objects = await listObjects(input.appId, input.signal);
+    const appRoot = `${root(input.appId)}/`;
+    const releasePrefix = `${appRoot}releases/`;
+    const channelPrefix = `${appRoot}channels/`;
+    const markerPrefix = `${appRoot}gc/`;
+    const objectKeysByRelease = new Map<string, string[]>();
+    const objectBytesByRelease = new Map<string, number>();
+    for (const blobObject of objects) {
+      if (!blobObject.key.startsWith(releasePrefix)) continue;
+      const suffix = blobObject.key.slice(releasePrefix.length);
+      const releaseId = suffix.slice(0, suffix.indexOf("/"));
+      if (!RELEASE.test(releaseId)) continue;
+      objectKeysByRelease.set(releaseId, [
+        ...(objectKeysByRelease.get(releaseId) ?? []),
+        blobObject.key,
+      ]);
+      objectBytesByRelease.set(
+        releaseId,
+        (objectBytesByRelease.get(releaseId) ?? 0) + blobObject.size,
+      );
+    }
+    const channels: MobileUpdateChannel[] = [];
+    for (const blobObject of objects) {
+      if (
+        !blobObject.key.startsWith(channelPrefix) ||
+        !blobObject.key.endsWith(".json")
+      )
+        continue;
+      const bytes = await options.store.get(blobObject.key);
+      if (!bytes)
+        throw new MobileUpdateRegistryError(
+          "Mobile update channel disappeared during lifecycle inspection",
+        );
+      const channel = parseChannel(decode(bytes));
+      if (channel.appId !== input.appId)
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update channel identity changed",
+        );
+      channels.push(channel);
+    }
+    const markedAt = new Map<string, string>();
+    for (const blobObject of objects) {
+      if (
+        !blobObject.key.startsWith(markerPrefix) ||
+        !blobObject.key.endsWith(".json")
+      )
+        continue;
+      const releaseId = blobObject.key.slice(
+        markerPrefix.length,
+        -".json".length,
+      );
+      if (!RELEASE.test(releaseId)) continue;
+      const bytes = await options.store.get(blobObject.key);
+      if (!bytes) continue;
+      const marker = decode(bytes);
+      if (
+        !object(marker) ||
+        marker.format !== 1 ||
+        marker.appId !== input.appId ||
+        marker.releaseId !== releaseId ||
+        !iso(marker.markedAt)
+      )
+        throw new MobileUpdateRegistryError(
+          "Mobile update collection marker is invalid",
+        );
+      markedAt.set(releaseId, marker.markedAt);
+    }
+    const active = new Set(
+      channels.flatMap((channel) =>
+        channel.releaseId ? [channel.releaseId] : [],
+      ),
+    );
+    const fallback = new Set(
+      channels.flatMap((channel) =>
+        channel.fallbackReleaseId ? [channel.fallbackReleaseId] : [],
+      ),
+    );
+    const manifests: MobileUpdateManifest[] = [];
+    for (const releaseId of objectKeysByRelease.keys()) {
+      const release = await readManifest(input.appId, releaseId);
+      if (release) manifests.push(release.manifest);
+    }
+    const recent = new Set<string>();
+    const manifestsByChannel = new Map<string, MobileUpdateManifest[]>();
+    for (const manifest of manifests)
+      manifestsByChannel.set(manifest.channel, [
+        ...(manifestsByChannel.get(manifest.channel) ?? []),
+        manifest,
+      ]);
+    for (const releases of manifestsByChannel.values())
+      for (const manifest of releases
+        .toSorted((left, right) =>
+          right.createdAt.localeCompare(left.createdAt),
+        )
+        .slice(0, retainRecent))
+        recent.add(manifest.releaseId);
+    const now = clock().getTime();
+    const releases = manifests
+      .map((manifest): MobileUpdateStorageRelease => {
+        const protectedBy: MobileUpdateStorageRelease["protectedBy"] = [];
+        if (active.has(manifest.releaseId)) protectedBy.push("active");
+        if (fallback.has(manifest.releaseId)) protectedBy.push("fallback");
+        if (recent.has(manifest.releaseId)) protectedBy.push("recent");
+        if (now - Date.parse(manifest.createdAt) < minAgeMs)
+          protectedBy.push("age");
+
+        return {
+          bytes: objectBytesByRelease.get(manifest.releaseId) ?? 0,
+          channel: manifest.channel,
+          createdAt: manifest.createdAt,
+          ...(markedAt.has(manifest.releaseId)
+            ? { markedAt: markedAt.get(manifest.releaseId) }
+            : {}),
+          objectCount: objectKeysByRelease.get(manifest.releaseId)?.length ?? 0,
+          protectedBy,
+          releaseId: manifest.releaseId,
+        };
+      })
+      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const releaseBytes = releases.reduce(
+      (total, release) => total + release.bytes,
+      0,
+    );
+    const totalBytes = objects.reduce(
+      (total, object) => total + object.size,
+      0,
+    );
+
+    return {
+      objectKeysByRelease,
+      report: {
+        appId: input.appId,
+        channelCount: channels.length,
+        reclaimableBytes: releases
+          .filter((release) => release.protectedBy.length === 0)
+          .reduce((total, release) => total + release.bytes, 0),
+        releaseBytes,
+        releaseCount: releases.length,
+        releases,
+        totalBytes,
+        totalObjectCount: objects.length,
+        untrackedBytes: totalBytes - releaseBytes,
+      },
+    };
+  };
+
+  const pruneUpdates: MobileUpdateRegistry["pruneUpdates"] = async (input) => {
+    const initial = await inventory(input);
+    const result: MobileUpdatePruneResult = {
+      ...initial.report,
+      dryRun: input.apply !== true,
+      marked: [],
+      reclaimedBytes: 0,
+      restored: [],
+      swept: [],
+    };
+    if (input.apply !== true) return result;
+    const remove = options.store.delete;
+    if (!remove)
+      throw new MobileUpdateRegistryError(
+        "Mobile update storage does not support lifecycle deletion",
+      );
+    const gracePeriodMs = input.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
+    if (!Number.isSafeInteger(gracePeriodMs) || gracePeriodMs < 0)
+      throw new MobileUpdateRegistryError(
+        "Mobile update collection grace period is invalid",
+      );
+    const now = clock();
+    for (const release of initial.report.releases) {
+      input.signal?.throwIfAborted();
+      const marker = tombstoneKey(input.appId, release.releaseId);
+      if (release.protectedBy.length > 0) {
+        if (release.markedAt) {
+          await remove(marker);
+          result.restored.push(release.releaseId);
+        }
+        continue;
+      }
+      if (!release.markedAt) {
+        const bytes = json({
+          appId: input.appId,
+          format: 1,
+          markedAt: now.toISOString(),
+          releaseId: release.releaseId,
+        });
+        await options.store.put(marker, bytes, {
+          cacheControl: "no-cache",
+          contentType: "application/json",
+          maxBytes: bytes.byteLength,
+          metadata: { releaseid: release.releaseId, sha256: digest(bytes) },
+          signal: input.signal,
+        });
+        result.marked.push(release.releaseId);
+      }
+    }
+    const current = await inventory(input);
+    for (const release of current.report.releases) {
+      input.signal?.throwIfAborted();
+      if (
+        release.protectedBy.length > 0 ||
+        !release.markedAt ||
+        now.getTime() - Date.parse(release.markedAt) < gracePeriodMs ||
+        result.marked.includes(release.releaseId)
+      )
+        continue;
+      const checked = await inventory(input);
+      const candidate = checked.report.releases.find(
+        (value) => value.releaseId === release.releaseId,
+      );
+      if (!candidate || candidate.protectedBy.length > 0 || !candidate.markedAt)
+        continue;
+      const keys = checked.objectKeysByRelease.get(release.releaseId) ?? [];
+      for (const key of keys.toSorted((left, right) => {
+        const leftManifest = left.endsWith("/update.json");
+        const rightManifest = right.endsWith("/update.json");
+
+        return Number(leftManifest) - Number(rightManifest);
+      }))
+        await remove(key);
+      await remove(tombstoneKey(input.appId, release.releaseId));
+      result.reclaimedBytes += candidate.bytes;
+      result.swept.push(release.releaseId);
+    }
+
+    return result;
+  };
+
   return {
+    inspectUpdateStorage: async (input) => (await inventory(input)).report,
+    pruneUpdates,
     publishUpdate: async (input) => {
       input.signal?.throwIfAborted();
       const manifest = parseMobileUpdateManifest(input.manifest);
       verifyManifestSignature(manifest, options.publicKeys);
+      await assertNotMarked(manifest.appId, manifest.releaseId);
       const localRoot = path.resolve(input.releaseDirectory);
       const localManifest = parseMobileUpdateManifest(
         JSON.parse(await readFile(path.join(localRoot, "update.json"), "utf8")),
@@ -749,6 +1098,7 @@ export const createMobileUpdateRegistry = (
           "Mobile update channel does not exist",
         );
       if (input.releaseId) {
+        await assertNotMarked(input.appId, input.releaseId);
         const release = await readManifest(input.appId, input.releaseId);
         if (!release || release.manifest.channel !== input.channel)
           throw new MobileUpdateRegistryError(

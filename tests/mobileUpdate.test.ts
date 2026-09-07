@@ -59,6 +59,9 @@ const memoryStore = (settings: { lowercaseMetadata?: boolean } = {}) => {
     { bytes: Uint8Array; metadata?: Record<string, string> }
   >();
   const store: NativeReleaseBlobStore = {
+    delete: async (key) => {
+      objects.delete(key);
+    },
     get: async (key) => objects.get(key)?.bytes ?? null,
     head: async (key) => {
       const value = objects.get(key);
@@ -87,6 +90,16 @@ const memoryStore = (settings: { lowercaseMetadata?: boolean } = {}) => {
             : options?.metadata,
       });
     },
+    list: async (options = {}) => ({
+      objects: [...objects.entries()]
+        .filter(([key]) => key.startsWith(options.prefix ?? ""))
+        .map(([key, value]) => ({
+          key,
+          metadata: value.metadata,
+          size: value.bytes.byteLength,
+        })),
+      truncated: false,
+    }),
   };
 
   return { objects, store };
@@ -347,6 +360,138 @@ describe("mobile update registry", () => {
         runtimeFingerprint: first.manifest.runtimeFingerprint,
       }),
     ).toBeNull();
+  });
+
+  test("accounts for storage and sweeps only unreferenced releases after a grace period", async () => {
+    const memory = memoryStore();
+    const first = await fixture("retention-first");
+    const second = await fixture("retention-second");
+    const third = await fixture("retention-third");
+    let now = new Date("2026-10-01T00:00:00.000Z");
+    const registry = createMobileUpdateRegistry({
+      clock: () => now,
+      publicKeys,
+      store: memory.store,
+    });
+    for (const release of [first, second, third])
+      await registry.publishUpdate({
+        manifest: release.manifest,
+        releaseDirectory: release.root,
+        rollout: 1,
+      });
+
+    const report = await registry.inspectUpdateStorage({
+      appId: first.manifest.appId,
+      minAgeMs: 0,
+      retainRecent: 0,
+    });
+    expect(report.releaseCount).toBe(3);
+    expect(report.channelCount).toBe(1);
+    expect(report.totalBytes).toBeGreaterThan(report.releaseBytes);
+    expect(
+      report.releases.find(
+        (release) => release.releaseId === third.manifest.releaseId,
+      )?.protectedBy,
+    ).toContain("active");
+    expect(
+      report.releases.find(
+        (release) => release.releaseId === second.manifest.releaseId,
+      )?.protectedBy,
+    ).toContain("fallback");
+    expect(report.reclaimableBytes).toBeGreaterThan(0);
+
+    const preview = await registry.pruneUpdates({
+      appId: first.manifest.appId,
+      minAgeMs: 0,
+      retainRecent: 0,
+    });
+    expect(preview.dryRun).toBe(true);
+    expect(preview.marked).toEqual([]);
+    expect([...memory.objects.keys()].some((key) => key.includes("/gc/"))).toBe(
+      false,
+    );
+
+    const marked = await registry.pruneUpdates({
+      appId: first.manifest.appId,
+      apply: true,
+      gracePeriodMs: 7 * 24 * 60 * 60 * 1000,
+      minAgeMs: 0,
+      retainRecent: 0,
+    });
+    expect(marked.marked).toEqual([first.manifest.releaseId]);
+    expect(marked.swept).toEqual([]);
+    await expect(
+      registry.promoteUpdate({
+        appId: first.manifest.appId,
+        channel: first.manifest.channel,
+        releaseId: first.manifest.releaseId,
+        rollout: 1,
+      }),
+    ).rejects.toThrow("marked for collection");
+
+    now = new Date("2026-10-09T00:00:00.000Z");
+    const swept = await registry.pruneUpdates({
+      appId: first.manifest.appId,
+      apply: true,
+      gracePeriodMs: 7 * 24 * 60 * 60 * 1000,
+      minAgeMs: 0,
+      retainRecent: 0,
+    });
+    expect(swept.swept).toEqual([first.manifest.releaseId]);
+    expect(swept.reclaimedBytes).toBeGreaterThan(0);
+    expect(
+      await registry.readUpdateFile({
+        appId: first.manifest.appId,
+        path: "index.html",
+        releaseId: first.manifest.releaseId,
+      }),
+    ).toBeNull();
+    expect(
+      await registry.readUpdateFile({
+        appId: second.manifest.appId,
+        path: "index.html",
+        releaseId: second.manifest.releaseId,
+      }),
+    ).not.toBeNull();
+  });
+
+  test("restores a marked release when a later retention policy protects it", async () => {
+    const memory = memoryStore();
+    const first = await fixture("restore-first");
+    const second = await fixture("restore-second");
+    const third = await fixture("restore-third");
+    const registry = createMobileUpdateRegistry({
+      clock: () => new Date("2026-10-01T00:00:00.000Z"),
+      publicKeys,
+      store: memory.store,
+    });
+    for (const release of [first, second, third])
+      await registry.publishUpdate({
+        manifest: release.manifest,
+        releaseDirectory: release.root,
+        rollout: 1,
+      });
+    await registry.pruneUpdates({
+      appId: first.manifest.appId,
+      apply: true,
+      minAgeMs: 0,
+      retainRecent: 0,
+    });
+    const restored = await registry.pruneUpdates({
+      appId: first.manifest.appId,
+      apply: true,
+      minAgeMs: 0,
+      retainRecent: 3,
+    });
+    expect(restored.restored).toEqual([first.manifest.releaseId]);
+    await expect(
+      registry.promoteUpdate({
+        appId: first.manifest.appId,
+        channel: first.manifest.channel,
+        releaseId: first.manifest.releaseId,
+        rollout: 1,
+      }),
+    ).resolves.toMatchObject({ releaseId: first.manifest.releaseId });
   });
 
   test("rejects local tampering before publishing", async () => {
