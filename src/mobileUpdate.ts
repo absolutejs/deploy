@@ -960,7 +960,8 @@ export const createMobileUpdateRegistry = (
   > = async (input) => {
     if (!health) return null;
     const channel = await readChannel(input.appId, input.channel);
-    if (!channel?.releaseId) return null;
+    if (!channel?.releaseId || channel.releaseId !== input.releaseId)
+      return null;
     const resolution = await resolveUpdateState(input);
     if (
       resolution.status !== "selected" ||
