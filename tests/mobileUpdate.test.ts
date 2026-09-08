@@ -901,4 +901,131 @@ describe("mobile update registry", () => {
     );
     expect(missingServerKey.status).toBe(400);
   });
+
+  test("records authenticated fleet health and pauses only one promotion generation", async () => {
+    const memory = memoryStore();
+    let now = new Date("2026-09-03T12:00:00.000Z");
+    const first = await fixture("health-fallback");
+    const release = await fixture("health-current");
+    const registry = createMobileUpdateRegistry({
+      clock: () => now,
+      health: {
+        autoPause: { failureRate: 0.5, minimumReports: 2 },
+        secret: "health-secret-with-at-least-thirty-two-characters",
+      },
+      publicKeys,
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: first.manifest,
+      releaseDirectory: first.root,
+      rollout: 1,
+    });
+    now = new Date("2026-09-03T13:00:00.000Z");
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 1,
+    });
+    const handler = createMobileUpdateHandler({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      registry,
+    });
+    const identityHeaders = (installationId: string) => ({
+      "x-absolute-mobile-app": release.manifest.appId,
+      "x-absolute-mobile-channel": release.manifest.channel,
+      "x-absolute-mobile-installation": installationId,
+      "x-absolute-mobile-runtime": release.manifest.runtimeFingerprint,
+    });
+    const tokenFor = async (installationId: string) => {
+      const response = await handler(
+        new Request(
+          "https://api.example.com/__absolute/mobile/updates/production/update.json",
+          { headers: identityHeaders(installationId) },
+        ),
+      );
+      expect(response.status).toBe(200);
+
+      return response.headers.get("x-absolute-mobile-health-token")!;
+    };
+    const healthyId = "11111111-1111-4111-8111-111111111111";
+    const failedId = "22222222-2222-4222-8222-222222222222";
+    const healthyToken = await tokenFor(healthyId);
+    const failedToken = await tokenFor(failedId);
+    const report = (installationId: string, token: string, kind: string) =>
+      handler(
+        new Request(
+          "https://api.example.com/__absolute/mobile/updates/production/health",
+          {
+            body: JSON.stringify({
+              kind,
+              releaseId: release.manifest.releaseId,
+            }),
+            headers: {
+              ...identityHeaders(installationId),
+              "content-type": "application/json",
+              "x-absolute-mobile-health-token": token,
+            },
+            method: "POST",
+          },
+        ),
+      );
+    expect((await report(healthyId, healthyToken, "activated")).status).toBe(
+      202,
+    );
+    const paused = await report(failedId, failedToken, "rolled-back");
+    expect(paused.status).toBe(202);
+    expect(await paused.json()).toEqual({ paused: true });
+    expect((await report(failedId, failedToken, "rolled-back")).status).toBe(
+      202,
+    );
+    expect(
+      (await report(failedId, `${failedToken}x`, "rolled-back")).status,
+    ).toBe(403);
+    expect((await report(healthyId, failedToken, "rolled-back")).status).toBe(
+      403,
+    );
+    await expect(
+      registry.inspectUpdateHealth!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).resolves.toMatchObject({
+      activated: 1,
+      failureRate: 0.5,
+      failures: 1,
+      paused: true,
+      reportedInstallations: 2,
+      rolledBack: 1,
+      terminalReports: 2,
+    });
+    const afterPause = await registry.resolveUpdate({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      installationId: healthyId,
+      runtimeFingerprint: release.manifest.runtimeFingerprint,
+    });
+    expect(afterPause?.manifest.releaseId).toBe(first.manifest.releaseId);
+    expect(
+      [...memory.objects.values()].some(({ bytes }) =>
+        new TextDecoder().decode(bytes).includes(failedId),
+      ),
+    ).toBe(false);
+
+    now = new Date("2026-09-03T14:00:00.000Z");
+    await registry.promoteUpdate({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      releaseId: release.manifest.releaseId,
+      rollout: 1,
+    });
+    const retry = await registry.resolveUpdate({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      installationId: healthyId,
+      runtimeFingerprint: release.manifest.runtimeFingerprint,
+    });
+    expect(retry?.manifest.releaseId).toBe(release.manifest.releaseId);
+  });
 });

@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.9)
+### Signed mobile web-bundle updates (0.25.10)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
@@ -139,6 +139,10 @@ import {
 } from "@absolutejs/deploy/mobile-update";
 
 const updates = createMobileUpdateRegistry({
+  health: {
+    autoPause: { failureRate: 0.2, minimumReports: 20 },
+    secret: process.env.ABSOLUTE_MOBILE_UPDATE_HEALTH_SECRET!,
+  },
   publicKeys: { "production-2026": process.env.MOBILE_UPDATE_PUBLIC_KEY! },
   store,
 });
@@ -177,6 +181,18 @@ releases per channel and releases younger than 30 days are retained by default.
 Changing the policy to protect a marked release automatically restores it.
 Shared content is deleted only when no retained manifest references its digest.
 Serialize publication and pruning for each app when using a custom scheduler.
+
+When `health` is configured, selected clients receive a promotion-scoped HMAC
+capability and may submit only bounded update outcomes. The registry stores an
+HMAC pseudonym instead of the installation ID, deduplicates each outcome, and
+exposes `inspectUpdateHealth()`. Download failures are diagnostic only. Once the
+configured minimum terminal sample and rollback/quarantine rate are reached, an
+immutable marker pauses that exact promotion generation and resolution falls
+back to the prior release. Re-promoting creates a fresh generation. Keep the
+health secret server-only and apply ordinary ingress rate limits: capabilities
+prevent forged or cross-installation evidence, but anonymous installations are
+not hardware attestation and cannot prevent a Sybil client from requesting many
+identities.
 
 ## Infrastructure providers (0.14.0)
 

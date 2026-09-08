@@ -1,14 +1,19 @@
 import {
   createHash,
+  createHmac,
   createPrivateKey,
   createPublicKey,
   sign,
+  timingSafeEqual,
   verify,
   X509Certificate,
 } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { NativeReleaseBlobStore } from "./nativeRelease";
+import type {
+  NativeReleaseBlobObject,
+  NativeReleaseBlobStore,
+} from "./nativeRelease";
 
 export const MOBILE_UPDATE_REGISTRY_FORMAT = 1 as const;
 const DEFAULT_PREFIX = "absolutejs/mobile-updates";
@@ -24,6 +29,15 @@ const APP_ID = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EXPO_DESCRIPTOR = "_absolute/expo-update.json";
 const EXPO_CODE_SIGNING_ALGORITHM = "rsa-v1_5-sha256";
+const HEALTH_TOKEN_VERSION = 1;
+const HEALTH_KINDS = new Set([
+  "activated",
+  "downloaded",
+  "download-failed",
+  "quarantined",
+  "rolled-back",
+]);
+const FAILURE_HEALTH_KINDS = new Set(["quarantined", "rolled-back"]);
 
 export type ExpoUpdateCodeSigningOptions = {
   keys: Readonly<
@@ -162,7 +176,47 @@ export type MobileUpdateResolution =
       status: "selected";
     };
 
+export type MobileUpdateHealthKind =
+  | "activated"
+  | "downloaded"
+  | "download-failed"
+  | "quarantined"
+  | "rolled-back";
+
+export type MobileUpdateHealthTransfer = {
+  avoidedBytes: number;
+  downloadedBytes: number;
+  durationMs: number;
+  resumedBytes: number;
+  reusedBytes: number;
+  throughputBytesPerSecond: number;
+};
+
+export type MobileUpdateHealthReport = {
+  activated: number;
+  appId: string;
+  channel: string;
+  downloaded: number;
+  downloadFailed: number;
+  failureRate: number;
+  failures: number;
+  paused: boolean;
+  promotionId: string;
+  quarantined: number;
+  releaseId: string;
+  reportedInstallations: number;
+  rolledBack: number;
+  rollout: number;
+  terminalReports: number;
+  transfer: MobileUpdateHealthTransfer;
+};
+
 export type MobileUpdateRegistry = {
+  inspectUpdateHealth?(input: {
+    appId: string;
+    channel: string;
+    releaseId?: string;
+  }): Promise<MobileUpdateHealthReport | null>;
   inspectUpdateStorage(
     input: MobileUpdateRetentionOptions,
   ): Promise<MobileUpdateStorageReport>;
@@ -205,10 +259,36 @@ export type MobileUpdateRegistry = {
     path: string;
     releaseId: string;
   }): Promise<{ bytes: Uint8Array; file: MobileUpdateFile } | null>;
+  issueUpdateHealthToken?(input: {
+    appId: string;
+    channel: string;
+    installationId: string;
+    releaseId: string;
+    runtimeFingerprint: string;
+  }): Promise<string | null>;
+  recordUpdateHealth?(input: {
+    appId: string;
+    channel: string;
+    installationId: string;
+    kind: MobileUpdateHealthKind;
+    reason?: "boot-interrupted" | "boot-timeout";
+    releaseId: string;
+    runtimeFingerprint: string;
+    token: string;
+    transfer?: MobileUpdateHealthTransfer;
+  }): Promise<MobileUpdateHealthReport>;
+};
+
+export type MobileUpdateHealthOptions = {
+  /** Pauses only the exact promotion generation after this many terminal reports. */
+  autoPause?: { failureRate?: number; minimumReports?: number };
+  /** At least 32 unpredictable server-only characters. */
+  secret: string;
 };
 
 export type MobileUpdateRegistryOptions = {
   clock?: () => Date;
+  health?: MobileUpdateHealthOptions;
   prefix?: string;
   /** Trusted ECDSA P-256 SPKI public keys as canonical base64 DER. */
   publicKeys: Readonly<Record<string, string>>;
@@ -563,11 +643,81 @@ const rolloutMember = (input: {
   return value / 0x1_0000_0000 < input.rollout;
 };
 
+type MobileUpdateHealthTokenPayload = {
+  appId: string;
+  channel: string;
+  format: typeof HEALTH_TOKEN_VERSION;
+  installationId: string;
+  promotionId: string;
+  releaseId: string;
+  runtimeFingerprint: string;
+};
+
+const base64Url = (value: string | Uint8Array) =>
+  Buffer.from(value).toString("base64url");
+const healthPromotionId = (channel: MobileUpdateChannel) =>
+  digest(
+    new TextEncoder().encode(
+      `${channel.appId}\0${channel.channel}\0${channel.releaseId ?? "embedded"}\0${channel.promotedAt}`,
+    ),
+  );
+const finiteMetric = (value: unknown, field: string) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    throw new MobileUpdateRegistryError(
+      `Mobile update health ${field} is invalid`,
+    );
+
+  return value;
+};
+
+const parseHealthTransfer = (
+  value: MobileUpdateHealthTransfer | undefined,
+): MobileUpdateHealthTransfer | undefined => {
+  if (value === undefined) return undefined;
+  if (!object(value))
+    throw new MobileUpdateRegistryError(
+      "Mobile update health transfer is invalid",
+    );
+
+  return {
+    avoidedBytes: finiteMetric(value.avoidedBytes, "avoidedBytes"),
+    downloadedBytes: finiteMetric(value.downloadedBytes, "downloadedBytes"),
+    durationMs: finiteMetric(value.durationMs, "durationMs"),
+    resumedBytes: finiteMetric(value.resumedBytes, "resumedBytes"),
+    reusedBytes: finiteMetric(value.reusedBytes, "reusedBytes"),
+    throughputBytesPerSecond: finiteMetric(
+      value.throughputBytesPerSecond,
+      "throughputBytesPerSecond",
+    ),
+  };
+};
+
 export const createMobileUpdateRegistry = (
   options: MobileUpdateRegistryOptions,
 ): MobileUpdateRegistry => {
   const prefix = normalizedPrefix(options.prefix ?? DEFAULT_PREFIX);
   const clock = options.clock ?? (() => new Date());
+  const health = options.health;
+  if (health && health.secret.length < 32)
+    throw new MobileUpdateRegistryError(
+      "Mobile update health secret must contain at least 32 characters",
+    );
+  if (health && !options.store.list)
+    throw new MobileUpdateRegistryError(
+      "Mobile update health requires storage lifecycle listing",
+    );
+  const minimumReports = health?.autoPause?.minimumReports ?? 20;
+  const failureThreshold = health?.autoPause?.failureRate ?? 0.2;
+  if (
+    health &&
+    (!Number.isSafeInteger(minimumReports) ||
+      minimumReports < 1 ||
+      failureThreshold <= 0 ||
+      failureThreshold > 1)
+  )
+    throw new MobileUpdateRegistryError(
+      "Mobile update health auto-pause policy is invalid",
+    );
   const root = (appId: string) => `${prefix}/${appHash(appId)}`;
   const releaseRoot = (
     manifest: Pick<MobileUpdateManifest, "appId" | "releaseId">,
@@ -583,6 +733,10 @@ export const createMobileUpdateRegistry = (
     `${root(appId)}/blobs/${sha256}`;
   const tombstoneKey = (appId: string, releaseId: string) =>
     `${root(appId)}/gc/${releaseId}.json`;
+  const healthRoot = (appId: string, promotionId: string, releaseId: string) =>
+    `${root(appId)}/health/${promotionId}/${releaseId}`;
+  const pauseKey = (appId: string, promotionId: string, releaseId: string) =>
+    `${healthRoot(appId, promotionId, releaseId)}/paused.json`;
   const channelKey = (appId: string, channel: string) => {
     if (!APP_ID.test(appId) || !NAME.test(channel))
       throw new MobileUpdateRegistryError(
@@ -623,6 +777,65 @@ export const createMobileUpdateRegistry = (
       );
 
     return value;
+  };
+  const signHealthToken = (payload: MobileUpdateHealthTokenPayload) => {
+    if (!health) return null;
+    const encoded = base64Url(JSON.stringify(payload));
+    const signature = createHmac("sha256", health.secret)
+      .update(encoded)
+      .digest("base64url");
+
+    return `${encoded}.${signature}`;
+  };
+  const verifyHealthToken = (token: string) => {
+    if (!health)
+      throw new MobileUpdateRegistryError(
+        "Mobile update health reporting is not configured",
+      );
+    const [encoded, provided, extra] = token.split(".");
+    if (!encoded || !provided || extra)
+      throw new MobileUpdateRegistryError(
+        "Mobile update health token is invalid",
+      );
+    const expected = createHmac("sha256", health.secret)
+      .update(encoded)
+      .digest();
+    let actual: Buffer;
+    try {
+      actual = Buffer.from(provided, "base64url");
+    } catch {
+      actual = Buffer.alloc(0);
+    }
+    if (
+      actual.byteLength !== expected.byteLength ||
+      !timingSafeEqual(actual, expected)
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update health token is invalid",
+      );
+    let value: unknown;
+    try {
+      value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    } catch {
+      throw new MobileUpdateRegistryError(
+        "Mobile update health token is invalid",
+      );
+    }
+    if (
+      !object(value) ||
+      value.format !== HEALTH_TOKEN_VERSION ||
+      typeof value.appId !== "string" ||
+      typeof value.channel !== "string" ||
+      typeof value.installationId !== "string" ||
+      typeof value.promotionId !== "string" ||
+      typeof value.releaseId !== "string" ||
+      typeof value.runtimeFingerprint !== "string"
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update health token is invalid",
+      );
+
+    return value as MobileUpdateHealthTokenPayload;
   };
   const assertNotMarked = async (appId: string, releaseId: string) => {
     if (!APP_ID.test(appId) || !RELEASE.test(releaseId))
@@ -702,7 +915,7 @@ export const createMobileUpdateRegistry = (
   }): Promise<MobileUpdateResolution> => {
     const channel = await readChannel(input.appId, input.channel);
     if (!channel?.releaseId) return { status: "empty" };
-    const selected = rolloutMember({
+    let selected = rolloutMember({
       appId: input.appId,
       channel: input.channel,
       installationId: input.installationId,
@@ -711,6 +924,14 @@ export const createMobileUpdateRegistry = (
     })
       ? channel.releaseId
       : channel.fallbackReleaseId;
+    if (
+      health &&
+      selected === channel.releaseId &&
+      (await options.store.head(
+        pauseKey(input.appId, healthPromotionId(channel), channel.releaseId),
+      ))
+    )
+      selected = channel.fallbackReleaseId;
     if (!selected) return { status: "empty" };
     const release = await readManifest(input.appId, selected);
     if (
@@ -732,6 +953,238 @@ export const createMobileUpdateRegistry = (
       manifestKey: release.key,
       status: "selected",
     };
+  };
+
+  const issueUpdateHealthToken: NonNullable<
+    MobileUpdateRegistry["issueUpdateHealthToken"]
+  > = async (input) => {
+    if (!health) return null;
+    const channel = await readChannel(input.appId, input.channel);
+    if (!channel?.releaseId) return null;
+    const resolution = await resolveUpdateState(input);
+    if (
+      resolution.status !== "selected" ||
+      resolution.manifest.releaseId !== input.releaseId
+    )
+      return null;
+
+    return signHealthToken({
+      appId: input.appId,
+      channel: input.channel,
+      format: HEALTH_TOKEN_VERSION,
+      installationId: input.installationId,
+      promotionId: healthPromotionId(channel),
+      releaseId: input.releaseId,
+      runtimeFingerprint: input.runtimeFingerprint,
+    });
+  };
+
+  const inspectUpdateHealth: NonNullable<
+    MobileUpdateRegistry["inspectUpdateHealth"]
+  > = async (input) => {
+    if (!health)
+      throw new MobileUpdateRegistryError(
+        "Mobile update health reporting is not configured",
+      );
+    const channel = await readChannel(input.appId, input.channel);
+    const releaseId = input.releaseId ?? channel?.releaseId;
+    if (!channel || !releaseId || channel.releaseId !== releaseId) return null;
+    const promotionId = healthPromotionId(channel);
+    const prefix = `${healthRoot(input.appId, promotionId, releaseId)}/events/`;
+    const objects: NativeReleaseBlobObject[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await options.store.list!({
+        ...(cursor ? { cursor } : {}),
+        prefix,
+      });
+      objects.push(...page.objects);
+      if (!page.truncated) break;
+      if (!page.cursor || cursors.has(page.cursor))
+        throw new MobileUpdateRegistryError(
+          "Mobile update health storage returned an invalid cursor",
+        );
+      cursors.add(page.cursor);
+      cursor = page.cursor;
+    } while (true);
+    const installations = new Set<string>();
+    const byKind = new Map<MobileUpdateHealthKind, Set<string>>(
+      [...HEALTH_KINDS].map((kind) => [
+        kind as MobileUpdateHealthKind,
+        new Set(),
+      ]),
+    );
+    const transfer: MobileUpdateHealthTransfer = {
+      avoidedBytes: 0,
+      downloadedBytes: 0,
+      durationMs: 0,
+      resumedBytes: 0,
+      reusedBytes: 0,
+      throughputBytesPerSecond: 0,
+    };
+    for (const item of objects) {
+      const bytes = await options.store.get(item.key);
+      if (!bytes) continue;
+      const head = await options.store.head(item.key);
+      if (
+        !head ||
+        head.size !== bytes.byteLength ||
+        head.metadata?.sha256 !== digest(bytes)
+      )
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update health evidence integrity failed",
+        );
+      const value = decode(bytes);
+      if (
+        !object(value) ||
+        typeof value.installationHash !== "string" ||
+        !HEALTH_KINDS.has(String(value.kind))
+      )
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update health evidence is invalid",
+        );
+      const kind = value.kind as MobileUpdateHealthKind;
+      installations.add(value.installationHash);
+      byKind.get(kind)!.add(value.installationHash);
+      if (kind === "downloaded" && object(value.transfer)) {
+        const parsed = parseHealthTransfer(
+          value.transfer as MobileUpdateHealthTransfer,
+        )!;
+        for (const key of Object.keys(
+          transfer,
+        ) as (keyof MobileUpdateHealthTransfer)[])
+          transfer[key] += parsed[key];
+      }
+    }
+    const failures = new Set([
+      ...byKind.get("quarantined")!,
+      ...byKind.get("rolled-back")!,
+    ]);
+    const terminals = new Set([...byKind.get("activated")!, ...failures]);
+    const failureRate =
+      terminals.size === 0 ? 0 : failures.size / terminals.size;
+
+    return {
+      activated: byKind.get("activated")!.size,
+      appId: input.appId,
+      channel: input.channel,
+      downloaded: byKind.get("downloaded")!.size,
+      downloadFailed: byKind.get("download-failed")!.size,
+      failureRate,
+      failures: failures.size,
+      paused: Boolean(
+        await options.store.head(pauseKey(input.appId, promotionId, releaseId)),
+      ),
+      promotionId,
+      quarantined: byKind.get("quarantined")!.size,
+      releaseId,
+      reportedInstallations: installations.size,
+      rolledBack: byKind.get("rolled-back")!.size,
+      rollout: channel.rollout,
+      terminalReports: terminals.size,
+      transfer,
+    };
+  };
+
+  const recordUpdateHealth: NonNullable<
+    MobileUpdateRegistry["recordUpdateHealth"]
+  > = async (input) => {
+    const payload = verifyHealthToken(input.token);
+    if (
+      payload.appId !== input.appId ||
+      payload.channel !== input.channel ||
+      payload.installationId !== input.installationId ||
+      payload.releaseId !== input.releaseId ||
+      payload.runtimeFingerprint !== input.runtimeFingerprint ||
+      !HEALTH_KINDS.has(input.kind) ||
+      (input.reason !== undefined &&
+        input.reason !== "boot-interrupted" &&
+        input.reason !== "boot-timeout")
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update health evidence does not match its token",
+      );
+    const release = await readManifest(input.appId, input.releaseId);
+    if (
+      !release ||
+      release.manifest.runtimeFingerprint !== input.runtimeFingerprint
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update health release is invalid",
+      );
+    const activeChannel = await readChannel(input.appId, input.channel);
+    if (
+      !activeChannel ||
+      activeChannel.releaseId !== input.releaseId ||
+      healthPromotionId(activeChannel) !== payload.promotionId
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update health promotion is no longer active",
+      );
+    const transfer = parseHealthTransfer(input.transfer);
+    const installationHash = createHmac("sha256", health!.secret)
+      .update(input.installationId)
+      .digest("hex");
+    const evidence = {
+      format: 1,
+      installationHash,
+      kind: input.kind,
+      observedAt: clock().toISOString(),
+      ...(input.reason ? { reason: input.reason } : {}),
+      ...(transfer ? { transfer } : {}),
+    };
+    const bytes = json(evidence);
+    await options.store.put(
+      `${healthRoot(input.appId, payload.promotionId, input.releaseId)}/events/${installationHash}/${input.kind}.json`,
+      bytes,
+      {
+        cacheControl: "no-store",
+        contentType: "application/json",
+        maxBytes: bytes.byteLength,
+        metadata: { kind: input.kind, sha256: digest(bytes) },
+      },
+    );
+    let report = await inspectUpdateHealth({
+      appId: input.appId,
+      channel: input.channel,
+      releaseId: input.releaseId,
+    });
+    if (!report)
+      throw new MobileUpdateRegistryError(
+        "Mobile update health promotion is no longer active",
+      );
+    if (
+      FAILURE_HEALTH_KINDS.has(input.kind) &&
+      report.terminalReports >= minimumReports &&
+      report.failureRate >= failureThreshold &&
+      !report.paused
+    ) {
+      const marker = json({
+        appId: input.appId,
+        channel: input.channel,
+        failureRate: report.failureRate,
+        failures: report.failures,
+        format: 1,
+        pausedAt: clock().toISOString(),
+        promotionId: payload.promotionId,
+        releaseId: input.releaseId,
+        reports: report.terminalReports,
+      });
+      await options.store.put(
+        pauseKey(input.appId, payload.promotionId, input.releaseId),
+        marker,
+        {
+          cacheControl: "no-store",
+          contentType: "application/json",
+          maxBytes: marker.byteLength,
+          metadata: { releaseid: input.releaseId, sha256: digest(marker) },
+        },
+      );
+      report = { ...report, paused: true };
+    }
+
+    return report;
   };
 
   const retentionValues = (input: MobileUpdateRetentionOptions) => {
@@ -1061,6 +1514,9 @@ export const createMobileUpdateRegistry = (
   };
 
   return {
+    ...(health
+      ? { inspectUpdateHealth, issueUpdateHealthToken, recordUpdateHealth }
+      : {}),
     inspectUpdateStorage: async (input) => (await inventory(input)).report,
     pruneUpdates,
     publishUpdate: async (input) => {
@@ -1508,7 +1964,8 @@ export const createMobileUpdateHandler = (options: {
       origin && allowedOrigins.has(origin)
         ? {
             "access-control-allow-origin": origin,
-            "access-control-expose-headers": "content-range,etag",
+            "access-control-expose-headers":
+              "content-range,etag,x-absolute-mobile-health-token",
             vary: "Origin",
           }
         : {};
@@ -1520,18 +1977,83 @@ export const createMobileUpdateHandler = (options: {
         headers: {
           ...cors,
           "access-control-allow-headers":
-            "if-range,range,x-absolute-mobile-app,x-absolute-mobile-channel,x-absolute-mobile-installation,x-absolute-mobile-release,x-absolute-mobile-runtime",
-          "access-control-allow-methods": "GET,OPTIONS",
+            "content-type,if-range,range,x-absolute-mobile-app,x-absolute-mobile-channel,x-absolute-mobile-health-token,x-absolute-mobile-installation,x-absolute-mobile-release,x-absolute-mobile-runtime",
+          "access-control-allow-methods": "GET,POST,OPTIONS",
           "access-control-max-age": "600",
         },
         status: 204,
       });
     }
-    if (request.method !== "GET") return new Response(null, { status: 405 });
     const pathname = new URL(request.url).pathname.replace(/^\/+/, "");
     const relative = pathname.startsWith(`${route}/`)
       ? pathname.slice(route.length + 1)
       : "";
+    if (request.method === "POST" && relative === "health") {
+      if (!options.registry.recordUpdateHealth)
+        return new Response(null, { status: 404 });
+      const appId = request.headers.get("x-absolute-mobile-app");
+      const channel = request.headers.get("x-absolute-mobile-channel");
+      const installationId = request.headers.get(
+        "x-absolute-mobile-installation",
+      );
+      const runtimeFingerprint = request.headers.get(
+        "x-absolute-mobile-runtime",
+      );
+      const token = request.headers.get("x-absolute-mobile-health-token");
+      const declared = Number(request.headers.get("content-length"));
+      if (
+        appId !== options.appId ||
+        channel !== options.channel ||
+        !installationId ||
+        !runtimeFingerprint ||
+        !token ||
+        (Number.isFinite(declared) && declared > 4096)
+      )
+        return new Response(null, { status: 400 });
+      const bodyBytes = new Uint8Array(await request.arrayBuffer());
+      if (bodyBytes.byteLength > 4096)
+        return new Response(null, { status: 413 });
+      let body: unknown;
+      try {
+        body = JSON.parse(new TextDecoder().decode(bodyBytes));
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      if (
+        !object(body) ||
+        typeof body.releaseId !== "string" ||
+        typeof body.kind !== "string"
+      )
+        return new Response(null, { status: 400 });
+      try {
+        const report = await options.registry.recordUpdateHealth({
+          appId,
+          channel,
+          installationId,
+          kind: body.kind as MobileUpdateHealthKind,
+          ...(body.reason === "boot-interrupted" ||
+          body.reason === "boot-timeout"
+            ? { reason: body.reason }
+            : {}),
+          releaseId: body.releaseId,
+          runtimeFingerprint,
+          token,
+          ...(object(body.transfer)
+            ? { transfer: body.transfer as MobileUpdateHealthTransfer }
+            : {}),
+        });
+
+        return Response.json(
+          { paused: report.paused },
+          { headers: { ...cors, "cache-control": "no-store" }, status: 202 },
+        );
+      } catch (error) {
+        if (error instanceof MobileUpdateRegistryError)
+          return new Response(null, { status: 403 });
+        throw error;
+      }
+    }
+    if (request.method !== "GET") return new Response(null, { status: 405 });
     if (relative === "update.json") {
       const expoProtocolVersion = request.headers.get("expo-protocol-version");
       const expoProtocol = expoProtocolVersion !== null;
@@ -1576,6 +2098,16 @@ export const createMobileUpdateHandler = (options: {
             installationId,
             runtimeFingerprint,
           });
+      const healthToken =
+        selected && options.registry.issueUpdateHealthToken
+          ? await options.registry.issueUpdateHealthToken({
+              appId,
+              channel,
+              installationId,
+              releaseId: selected.manifest.releaseId,
+              runtimeFingerprint,
+            })
+          : null;
       if (expoProtocol) {
         let requestedCodeSigning: ExpoCodeSigning | undefined;
         try {
@@ -1649,6 +2181,7 @@ export const createMobileUpdateHandler = (options: {
           extra: {
             absolutejs: {
               channel: selected.manifest.channel,
+              ...(healthToken ? { healthToken } : {}),
               releaseId: selected.manifest.releaseId,
             },
             expoClient: descriptor.expoConfig,
@@ -1682,6 +2215,9 @@ export const createMobileUpdateHandler = (options: {
           ...cors,
           "cache-control": "no-store",
           etag: `"${selected.manifest.releaseId}"`,
+          ...(healthToken
+            ? { "x-absolute-mobile-health-token": healthToken }
+            : {}),
         },
       });
     }
