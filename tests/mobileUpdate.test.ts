@@ -1136,6 +1136,34 @@ describe("mobile update registry", () => {
       status: "complete",
     });
     expect(concurrent).toMatchObject({ currentStage: 1, rollout: 1 });
+    const restartedReader = createMobileUpdateRegistry({
+      clock: () => now,
+      health: {
+        autoPause: { failureRate: 0.5, minimumReports: 2 },
+        secret: "rollout-secret-with-at-least-thirty-two-characters",
+      },
+      publicKeys,
+      store: memory.store,
+    });
+    await expect(
+      restartedReader.inspectUpdateHealth!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).resolves.toMatchObject({
+      promotionId: initial!.promotionId,
+      rollout: 1,
+    });
+    expect(
+      (
+        await restartedReader.resolveUpdate({
+          appId: release.manifest.appId,
+          channel: release.manifest.channel,
+          installationId: selected[0]!,
+          runtimeFingerprint: release.manifest.runtimeFingerprint,
+        })
+      )?.manifest.releaseId,
+    ).toBe(release.manifest.releaseId);
 
     const paused = await registry.pauseUpdateRollout!({
       appId: release.manifest.appId,

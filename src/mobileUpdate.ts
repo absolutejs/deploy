@@ -1134,7 +1134,7 @@ export const createMobileUpdateRegistry = (
     return value;
   };
   const rolloutContext = async (channel: MobileUpdateChannel) => {
-    if (!rollout || !channel.releaseId) return null;
+    if (!options.store.list || !channel.releaseId) return null;
     const promotionId = healthPromotionId(channel);
     const storedPlan = await readVerifiedObject(
       rolloutPlanKey(channel.appId, promotionId, channel.releaseId),

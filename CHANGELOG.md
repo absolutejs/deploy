@@ -1,5 +1,11 @@
 # @absolutejs/deploy changelog
 
+## 0.25.13 — 2026-09-08
+
+- Keeps a promotion's frozen rollout plan authoritative for update resolution
+  after a trusted-server restart or configuration change, even when the new
+  process is not configured to perform further rollout mutations.
+
 ## 0.25.12 — 2026-09-08
 
 Adds durable, health-gated orchestration for staged mobile web-bundle rollouts.

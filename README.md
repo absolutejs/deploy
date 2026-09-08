@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.12)
+### Signed mobile web-bundle updates (0.25.13)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
