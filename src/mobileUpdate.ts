@@ -3,6 +3,7 @@ import {
   createHmac,
   createPrivateKey,
   createPublicKey,
+  randomUUID,
   sign,
   timingSafeEqual,
   verify,
@@ -83,6 +84,7 @@ export type MobileUpdateChannel = {
   channel: string;
   fallbackReleaseId?: string;
   format: typeof MOBILE_UPDATE_REGISTRY_FORMAT;
+  promotionId?: string;
   promotedAt: string;
   releaseId?: string;
   rollout: number;
@@ -211,12 +213,58 @@ export type MobileUpdateHealthReport = {
   transfer: MobileUpdateHealthTransfer;
 };
 
+export type MobileUpdateRolloutStage = {
+  /** Maximum failure rate permitted before advancing from this stage. */
+  maximumFailureRate: number;
+  /** Cumulative terminal installation reports required before advancement. */
+  minimumReports: number;
+  /** Minimum time spent at this stage before advancement. */
+  observationMs: number;
+  rollout: number;
+};
+
+export type MobileUpdateRolloutOptions = {
+  /** Evaluate and advance after terminal health reports. Defaults to false. */
+  automatic?: boolean;
+  /** Strictly increasing rollout stages. A promotion must start at one stage. */
+  stages: readonly MobileUpdateRolloutStage[];
+};
+
+export type MobileUpdateRolloutReport = MobileUpdateHealthReport & {
+  automatic: boolean;
+  currentStage: number;
+  enteredAt: string;
+  nextStage?: MobileUpdateRolloutStage;
+  pausedBy?: "fleet-health" | "operator";
+  status: "active" | "cancelled" | "complete" | "paused";
+};
+
 export type MobileUpdateRegistry = {
+  advanceUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+    rollout?: number;
+    signal?: AbortSignal;
+  }): Promise<MobileUpdateRolloutReport>;
+  cancelUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+    signal?: AbortSignal;
+  }): Promise<MobileUpdateRolloutReport>;
   inspectUpdateHealth?(input: {
     appId: string;
     channel: string;
     releaseId?: string;
   }): Promise<MobileUpdateHealthReport | null>;
+  inspectUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+  }): Promise<MobileUpdateRolloutReport | null>;
+  pauseUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+    signal?: AbortSignal;
+  }): Promise<MobileUpdateRolloutReport>;
   inspectUpdateStorage(
     input: MobileUpdateRetentionOptions,
   ): Promise<MobileUpdateStorageReport>;
@@ -277,6 +325,16 @@ export type MobileUpdateRegistry = {
     token: string;
     transfer?: MobileUpdateHealthTransfer;
   }): Promise<MobileUpdateHealthReport>;
+  reconcileUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+    signal?: AbortSignal;
+  }): Promise<MobileUpdateRolloutReport | null>;
+  resumeUpdateRollout?(input: {
+    appId: string;
+    channel: string;
+    signal?: AbortSignal;
+  }): Promise<MobileUpdateRolloutReport>;
 };
 
 export type MobileUpdateHealthOptions = {
@@ -292,6 +350,7 @@ export type MobileUpdateRegistryOptions = {
   prefix?: string;
   /** Trusted ECDSA P-256 SPKI public keys as canonical base64 DER. */
   publicKeys: Readonly<Record<string, string>>;
+  rollout?: MobileUpdateRolloutOptions;
   store: NativeReleaseBlobStore;
 };
 
@@ -575,6 +634,9 @@ const parseChannel = (value: unknown): MobileUpdateChannel => {
     (value.fallbackReleaseId !== undefined &&
       (typeof value.fallbackReleaseId !== "string" ||
         !RELEASE.test(value.fallbackReleaseId))) ||
+    (value.promotionId !== undefined &&
+      (typeof value.promotionId !== "string" ||
+        !HASH.test(value.promotionId))) ||
     (value.activationId !== undefined &&
       (typeof value.activationId !== "string" ||
         !HASH.test(value.activationId))) ||
@@ -592,6 +654,7 @@ const parseChannel = (value: unknown): MobileUpdateChannel => {
       ? { fallbackReleaseId: value.fallbackReleaseId }
       : {}),
     format: MOBILE_UPDATE_REGISTRY_FORMAT,
+    ...(value.promotionId ? { promotionId: value.promotionId } : {}),
     promotedAt: value.promotedAt,
     ...(value.releaseId ? { releaseId: value.releaseId } : {}),
     rollout: value.rollout,
@@ -653,9 +716,40 @@ type MobileUpdateHealthTokenPayload = {
   runtimeFingerprint: string;
 };
 
+type StoredMobileUpdateRolloutPlan = {
+  automatic: boolean;
+  createdAt: string;
+  format: 1;
+  promotionId: string;
+  releaseId: string;
+  stages: MobileUpdateRolloutStage[];
+};
+
+type StoredMobileUpdateRolloutControl = {
+  action: "cancel" | "pause" | "resume";
+  createdAt: string;
+  format: 1;
+  id: string;
+  promotionId: string;
+  releaseId: string;
+  resumedPauseIds?: string[];
+};
+
+type StoredMobileUpdateRolloutAdvance = {
+  createdAt: string;
+  failureRate: number;
+  format: 1;
+  promotionId: string;
+  releaseId: string;
+  rollout: number;
+  stage: number;
+  terminalReports: number;
+};
+
 const base64Url = (value: string | Uint8Array) =>
   Buffer.from(value).toString("base64url");
 const healthPromotionId = (channel: MobileUpdateChannel) =>
+  channel.promotionId ??
   digest(
     new TextEncoder().encode(
       `${channel.appId}\0${channel.channel}\0${channel.releaseId ?? "embedded"}\0${channel.promotedAt}`,
@@ -698,6 +792,7 @@ export const createMobileUpdateRegistry = (
   const prefix = normalizedPrefix(options.prefix ?? DEFAULT_PREFIX);
   const clock = options.clock ?? (() => new Date());
   const health = options.health;
+  const rollout = options.rollout;
   if (health && health.secret.length < 32)
     throw new MobileUpdateRegistryError(
       "Mobile update health secret must contain at least 32 characters",
@@ -705,6 +800,29 @@ export const createMobileUpdateRegistry = (
   if (health && !options.store.list)
     throw new MobileUpdateRegistryError(
       "Mobile update health requires storage lifecycle listing",
+    );
+  if (rollout && (!health || !options.store.list))
+    throw new MobileUpdateRegistryError(
+      "Mobile update rollout orchestration requires fleet health and storage lifecycle listing",
+    );
+  if (
+    rollout &&
+    (rollout.stages.length === 0 ||
+      rollout.stages.some(
+        (stage, index) =>
+          stage.rollout <= 0 ||
+          stage.rollout > 1 ||
+          !Number.isSafeInteger(stage.minimumReports) ||
+          stage.minimumReports < 1 ||
+          !Number.isSafeInteger(stage.observationMs) ||
+          stage.observationMs < 0 ||
+          stage.maximumFailureRate < 0 ||
+          stage.maximumFailureRate >= 1 ||
+          (index > 0 && stage.rollout <= rollout.stages[index - 1]!.rollout),
+      ))
+  )
+    throw new MobileUpdateRegistryError(
+      "Mobile update rollout stages are invalid",
     );
   const minimumReports = health?.autoPause?.minimumReports ?? 20;
   const failureThreshold = health?.autoPause?.failureRate ?? 0.2;
@@ -737,6 +855,13 @@ export const createMobileUpdateRegistry = (
     `${root(appId)}/health/${promotionId}/${releaseId}`;
   const pauseKey = (appId: string, promotionId: string, releaseId: string) =>
     `${healthRoot(appId, promotionId, releaseId)}/paused.json`;
+  const rolloutRoot = (appId: string, promotionId: string, releaseId: string) =>
+    `${healthRoot(appId, promotionId, releaseId)}/rollout`;
+  const rolloutPlanKey = (
+    appId: string,
+    promotionId: string,
+    releaseId: string,
+  ) => `${rolloutRoot(appId, promotionId, releaseId)}/plan.json`;
   const channelKey = (appId: string, channel: string) => {
     if (!APP_ID.test(appId) || !NAME.test(channel))
       throw new MobileUpdateRegistryError(
@@ -777,6 +902,135 @@ export const createMobileUpdateRegistry = (
       );
 
     return value;
+  };
+  const listPrefix = async (value: string) => {
+    const objects: NativeReleaseBlobObject[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await options.store.list!({
+        ...(cursor ? { cursor } : {}),
+        prefix: value,
+      });
+      objects.push(...page.objects);
+      if (!page.truncated) break;
+      if (!page.cursor || cursors.has(page.cursor))
+        throw new MobileUpdateRegistryError(
+          "Mobile update storage returned an invalid cursor",
+        );
+      cursors.add(page.cursor);
+      cursor = page.cursor;
+    } while (true);
+
+    return objects;
+  };
+  const readVerifiedObject = async (key: string, label: string) => {
+    const bytes = await options.store.get(key);
+    if (!bytes) return null;
+    const head = await options.store.head(key);
+    if (
+      !head ||
+      head.size !== bytes.byteLength ||
+      head.metadata?.sha256 !== digest(bytes)
+    )
+      throw new MobileUpdateRegistryError(
+        `Stored mobile update ${label} integrity failed`,
+      );
+
+    return decode(bytes);
+  };
+  const parseRolloutPlan = (
+    value: unknown,
+    promotionId: string,
+    releaseId: string,
+  ): StoredMobileUpdateRolloutPlan => {
+    if (
+      !object(value) ||
+      value.format !== 1 ||
+      value.promotionId !== promotionId ||
+      value.releaseId !== releaseId ||
+      typeof value.automatic !== "boolean" ||
+      !iso(value.createdAt) ||
+      !Array.isArray(value.stages)
+    )
+      throw new MobileUpdateRegistryError(
+        "Stored mobile update rollout plan is invalid",
+      );
+    const stages = value.stages.map((stage) => {
+      if (
+        !object(stage) ||
+        typeof stage.rollout !== "number" ||
+        typeof stage.maximumFailureRate !== "number" ||
+        !Number.isSafeInteger(stage.minimumReports) ||
+        !Number.isSafeInteger(stage.observationMs)
+      )
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update rollout plan is invalid",
+        );
+
+      return {
+        maximumFailureRate: stage.maximumFailureRate,
+        minimumReports: stage.minimumReports as number,
+        observationMs: stage.observationMs as number,
+        rollout: stage.rollout,
+      };
+    });
+    if (
+      stages.length === 0 ||
+      stages.some(
+        (stage, index) =>
+          stage.rollout <= 0 ||
+          stage.rollout > 1 ||
+          stage.minimumReports < 1 ||
+          stage.observationMs < 0 ||
+          stage.maximumFailureRate < 0 ||
+          stage.maximumFailureRate >= 1 ||
+          (index > 0 && stage.rollout <= stages[index - 1]!.rollout),
+      )
+    )
+      throw new MobileUpdateRegistryError(
+        "Stored mobile update rollout plan is invalid",
+      );
+
+    return {
+      automatic: value.automatic,
+      createdAt: value.createdAt,
+      format: 1,
+      promotionId,
+      releaseId,
+      stages,
+    };
+  };
+  const initializeRollout = async (
+    channel: MobileUpdateChannel,
+    signal?: AbortSignal,
+  ) => {
+    if (!rollout || !channel.releaseId) return;
+    if (!rollout.stages.some((stage) => stage.rollout === channel.rollout))
+      throw new MobileUpdateRegistryError(
+        "Mobile update promotion rollout must match a configured rollout stage",
+      );
+    const promotionId = healthPromotionId(channel);
+    const plan: StoredMobileUpdateRolloutPlan = {
+      automatic: rollout.automatic ?? false,
+      createdAt: channel.promotedAt,
+      format: 1,
+      promotionId,
+      releaseId: channel.releaseId,
+      stages: rollout.stages.map((stage) => ({ ...stage })),
+    };
+    const bytes = json(plan);
+    await options.store.put(
+      rolloutPlanKey(channel.appId, promotionId, channel.releaseId),
+      bytes,
+      {
+        cacheControl: "no-store",
+        contentType: "application/json",
+        maxBytes: bytes.byteLength,
+        metadata: { releaseid: channel.releaseId, sha256: digest(bytes) },
+        signal,
+      },
+    );
   };
   const signHealthToken = (payload: MobileUpdateHealthTokenPayload) => {
     if (!health) return null;
@@ -848,14 +1102,22 @@ export const createMobileUpdateRegistry = (
       );
   };
   const writeChannel = async (
-    input: Omit<MobileUpdateChannel, "format" | "promotedAt">,
+    input: Omit<MobileUpdateChannel, "format" | "promotedAt" | "promotionId">,
     signal?: AbortSignal,
+    beforeWrite?: (channel: MobileUpdateChannel) => Promise<void>,
   ) => {
+    const promotedAt = clock().toISOString();
     const value: MobileUpdateChannel = {
       ...input,
       format: MOBILE_UPDATE_REGISTRY_FORMAT,
-      promotedAt: clock().toISOString(),
+      promotedAt,
+      promotionId: digest(
+        new TextEncoder().encode(
+          `${input.appId}\0${input.channel}\0${input.releaseId ?? "embedded"}\0${promotedAt}\0${randomUUID()}`,
+        ),
+      ),
     };
+    await beforeWrite?.(value);
     const bytes = json(value);
     await options.store.put(channelKey(value.appId, value.channel), bytes, {
       cacheControl: "no-cache",
@@ -871,12 +1133,166 @@ export const createMobileUpdateRegistry = (
 
     return value;
   };
+  const rolloutContext = async (channel: MobileUpdateChannel) => {
+    if (!rollout || !channel.releaseId) return null;
+    const promotionId = healthPromotionId(channel);
+    const storedPlan = await readVerifiedObject(
+      rolloutPlanKey(channel.appId, promotionId, channel.releaseId),
+      "rollout plan",
+    );
+    if (storedPlan === null) return null;
+    const plan = parseRolloutPlan(storedPlan, promotionId, channel.releaseId);
+    const initialStage = plan.stages.findIndex(
+      (stage) => stage.rollout === channel.rollout,
+    );
+    if (initialStage < 0)
+      throw new MobileUpdateRegistryError(
+        "Stored mobile update rollout does not match its plan",
+      );
+    let currentStage = initialStage;
+    let enteredAt = plan.createdAt;
+    const advances = await listPrefix(
+      `${rolloutRoot(channel.appId, promotionId, channel.releaseId)}/advances/`,
+    );
+    for (const item of advances) {
+      const value = await readVerifiedObject(item.key, "rollout advancement");
+      if (
+        !object(value) ||
+        value.format !== 1 ||
+        value.promotionId !== promotionId ||
+        value.releaseId !== channel.releaseId ||
+        !Number.isSafeInteger(value.stage) ||
+        Number(value.stage) < initialStage ||
+        Number(value.stage) >= plan.stages.length ||
+        value.rollout !== plan.stages[Number(value.stage)]!.rollout ||
+        !iso(value.createdAt) ||
+        typeof value.failureRate !== "number" ||
+        !Number.isSafeInteger(value.terminalReports)
+      )
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update rollout advancement is invalid",
+        );
+      if (Number(value.stage) >= currentStage) {
+        currentStage = Number(value.stage);
+        enteredAt = value.createdAt;
+      }
+    }
+    const controls = await listPrefix(
+      `${rolloutRoot(channel.appId, promotionId, channel.releaseId)}/controls/`,
+    );
+    const parsedControls: StoredMobileUpdateRolloutControl[] = [];
+    for (const item of controls) {
+      const value = await readVerifiedObject(item.key, "rollout control");
+      if (
+        !object(value) ||
+        value.format !== 1 ||
+        value.promotionId !== promotionId ||
+        value.releaseId !== channel.releaseId ||
+        typeof value.id !== "string" ||
+        (value.action !== "pause" &&
+          value.action !== "resume" &&
+          value.action !== "cancel") ||
+        !iso(value.createdAt) ||
+        (value.resumedPauseIds !== undefined &&
+          (!Array.isArray(value.resumedPauseIds) ||
+            value.resumedPauseIds.some((id) => typeof id !== "string")))
+      )
+        throw new MobileUpdateRegistryError(
+          "Stored mobile update rollout control is invalid",
+        );
+      parsedControls.push(value as StoredMobileUpdateRolloutControl);
+    }
+    const cancelled = parsedControls.some(({ action }) => action === "cancel");
+    const resumedPauseIds = new Set(
+      parsedControls.flatMap((control) => control.resumedPauseIds ?? []),
+    );
+    const activePauseIds = parsedControls
+      .filter(
+        ({ action, id }) => action === "pause" && !resumedPauseIds.has(id),
+      )
+      .map(({ id }) => id);
+    const operatorPaused = activePauseIds.length > 0;
+    const fleetPaused = Boolean(
+      await options.store.head(
+        pauseKey(channel.appId, promotionId, channel.releaseId),
+      ),
+    );
+
+    return {
+      cancelled,
+      activePauseIds,
+      channel,
+      currentStage,
+      enteredAt,
+      fleetPaused,
+      operatorPaused,
+      plan,
+      promotionId,
+      rollout: plan.stages[currentStage]!.rollout,
+    };
+  };
+  const writeRolloutControl = async (
+    channel: MobileUpdateChannel,
+    action: StoredMobileUpdateRolloutControl["action"],
+    signal?: AbortSignal,
+  ) => {
+    const context = await rolloutContext(channel);
+    if (!context)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout orchestration is not configured",
+      );
+    if (context.cancelled)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout was already cancelled",
+      );
+    if (action === "resume" && context.fleetPaused)
+      throw new MobileUpdateRegistryError(
+        "A fleet-health pause requires an explicit re-promotion",
+      );
+    const releaseId = channel.releaseId;
+    if (!releaseId)
+      throw new MobileUpdateRegistryError(
+        "Mobile update channel does not have an active release",
+      );
+    const createdAt = clock().toISOString();
+    const id = randomUUID();
+    const event: StoredMobileUpdateRolloutControl = {
+      action,
+      createdAt,
+      format: 1,
+      id,
+      promotionId: context.promotionId,
+      releaseId,
+      ...(action === "resume"
+        ? { resumedPauseIds: context.activePauseIds }
+        : {}),
+    };
+    const bytes = json(event);
+    await options.store.put(
+      `${rolloutRoot(channel.appId, context.promotionId, releaseId)}/controls/${createdAt}-${id}-${action}.json`,
+      bytes,
+      {
+        cacheControl: "no-store",
+        contentType: "application/json",
+        maxBytes: bytes.byteLength,
+        metadata: { action, sha256: digest(bytes) },
+        signal,
+      },
+    );
+  };
   const promoteUpdate: MobileUpdateRegistry["promoteUpdate"] = async (
     input,
   ) => {
     input.signal?.throwIfAborted();
     if (input.rollout <= 0 || input.rollout > 1)
       throw new MobileUpdateRegistryError("Mobile update rollout is invalid");
+    if (
+      rollout &&
+      !rollout.stages.some((stage) => stage.rollout === input.rollout)
+    )
+      throw new MobileUpdateRegistryError(
+        "Mobile update promotion rollout must match a configured rollout stage",
+      );
     await assertNotMarked(input.appId, input.releaseId);
     const release = await readManifest(input.appId, input.releaseId);
     if (!release || release.manifest.channel !== input.channel)
@@ -897,6 +1313,7 @@ export const createMobileUpdateRegistry = (
         rollout: input.rollout,
       },
       input.signal,
+      (channel) => initializeRollout(channel, input.signal),
     );
 
     return {
@@ -915,21 +1332,29 @@ export const createMobileUpdateRegistry = (
   }): Promise<MobileUpdateResolution> => {
     const channel = await readChannel(input.appId, input.channel);
     if (!channel?.releaseId) return { status: "empty" };
+    const rolloutState = await rolloutContext(channel);
     let selected = rolloutMember({
       appId: input.appId,
       channel: input.channel,
       installationId: input.installationId,
       releaseId: channel.releaseId,
-      rollout: channel.rollout,
+      rollout: rolloutState?.rollout ?? channel.rollout,
     })
       ? channel.releaseId
       : channel.fallbackReleaseId;
     if (
-      health &&
       selected === channel.releaseId &&
-      (await options.store.head(
-        pauseKey(input.appId, healthPromotionId(channel), channel.releaseId),
-      ))
+      (rolloutState?.cancelled ||
+        rolloutState?.fleetPaused ||
+        rolloutState?.operatorPaused ||
+        (health &&
+          (await options.store.head(
+            pauseKey(
+              input.appId,
+              healthPromotionId(channel),
+              channel.releaseId,
+            ),
+          ))))
     )
       selected = channel.fallbackReleaseId;
     if (!selected) return { status: "empty" };
@@ -991,24 +1416,9 @@ export const createMobileUpdateRegistry = (
     const releaseId = input.releaseId ?? channel?.releaseId;
     if (!channel || !releaseId || channel.releaseId !== releaseId) return null;
     const promotionId = healthPromotionId(channel);
-    const prefix = `${healthRoot(input.appId, promotionId, releaseId)}/events/`;
-    const objects: NativeReleaseBlobObject[] = [];
-    const cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const page = await options.store.list!({
-        ...(cursor ? { cursor } : {}),
-        prefix,
-      });
-      objects.push(...page.objects);
-      if (!page.truncated) break;
-      if (!page.cursor || cursors.has(page.cursor))
-        throw new MobileUpdateRegistryError(
-          "Mobile update health storage returned an invalid cursor",
-        );
-      cursors.add(page.cursor);
-      cursor = page.cursor;
-    } while (true);
+    const objects = await listPrefix(
+      `${healthRoot(input.appId, promotionId, releaseId)}/events/`,
+    );
     const installations = new Set<string>();
     const byKind = new Map<MobileUpdateHealthKind, Set<string>>(
       [...HEALTH_KINDS].map((kind) => [
@@ -1066,6 +1476,8 @@ export const createMobileUpdateRegistry = (
     const failureRate =
       terminals.size === 0 ? 0 : failures.size / terminals.size;
 
+    const rolloutState = await rolloutContext(channel);
+
     return {
       activated: byKind.get("activated")!.size,
       appId: input.appId,
@@ -1075,18 +1487,169 @@ export const createMobileUpdateRegistry = (
       failureRate,
       failures: failures.size,
       paused: Boolean(
-        await options.store.head(pauseKey(input.appId, promotionId, releaseId)),
+        rolloutState?.cancelled ||
+        rolloutState?.fleetPaused ||
+        rolloutState?.operatorPaused ||
+        (await options.store.head(
+          pauseKey(input.appId, promotionId, releaseId),
+        )),
       ),
       promotionId,
       quarantined: byKind.get("quarantined")!.size,
       releaseId,
       reportedInstallations: installations.size,
       rolledBack: byKind.get("rolled-back")!.size,
-      rollout: channel.rollout,
+      rollout: rolloutState?.rollout ?? channel.rollout,
       terminalReports: terminals.size,
       transfer,
     };
   };
+
+  const inspectUpdateRollout: NonNullable<
+    MobileUpdateRegistry["inspectUpdateRollout"]
+  > = async (input) => {
+    const channel = await readChannel(input.appId, input.channel);
+    if (!channel?.releaseId) return null;
+    const context = await rolloutContext(channel);
+    if (!context)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout orchestration is not configured",
+      );
+    const healthReport = await inspectUpdateHealth(input);
+    if (!healthReport) return null;
+    const paused = context.fleetPaused || context.operatorPaused;
+    const complete = context.currentStage === context.plan.stages.length - 1;
+
+    return {
+      ...healthReport,
+      automatic: context.plan.automatic,
+      currentStage: context.currentStage,
+      enteredAt: context.enteredAt,
+      ...(!complete
+        ? { nextStage: context.plan.stages[context.currentStage + 1] }
+        : {}),
+      ...(context.fleetPaused
+        ? { pausedBy: "fleet-health" as const }
+        : context.operatorPaused
+          ? { pausedBy: "operator" as const }
+          : {}),
+      status: context.cancelled
+        ? "cancelled"
+        : paused
+          ? "paused"
+          : complete
+            ? "complete"
+            : "active",
+    };
+  };
+
+  const advanceRollout = async (
+    input: {
+      appId: string;
+      channel: string;
+      rollout?: number;
+      signal?: AbortSignal;
+    },
+    strict: boolean,
+  ) => {
+    input.signal?.throwIfAborted();
+    const channel = await readChannel(input.appId, input.channel);
+    if (!channel?.releaseId)
+      throw new MobileUpdateRegistryError(
+        "Mobile update channel does not have an active release",
+      );
+    const context = await rolloutContext(channel);
+    if (!context)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout orchestration is not configured",
+      );
+    const report = await inspectUpdateRollout(input);
+    if (!report)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout report is unavailable",
+      );
+    const nextStage = context.plan.stages[context.currentStage + 1];
+    if (!nextStage) return report;
+    if (input.rollout !== undefined && input.rollout !== nextStage.rollout)
+      throw new MobileUpdateRegistryError(
+        "Mobile update rollout can advance only to the next configured stage",
+      );
+    if (report.status !== "active") {
+      if (strict)
+        throw new MobileUpdateRegistryError(
+          `Mobile update rollout cannot advance while ${report.status}`,
+        );
+
+      return report;
+    }
+    const gate = context.plan.stages[context.currentStage]!;
+    const observedMs = clock().getTime() - Date.parse(context.enteredAt);
+    const blocked =
+      report.terminalReports < gate.minimumReports ||
+      report.failureRate > gate.maximumFailureRate ||
+      observedMs < gate.observationMs;
+    if (blocked) {
+      if (strict)
+        throw new MobileUpdateRegistryError(
+          `Mobile update rollout needs ${gate.minimumReports} terminal reports, at most ${(gate.maximumFailureRate * 100).toFixed(1)}% failures, and ${gate.observationMs}ms observation at the current stage`,
+        );
+
+      return report;
+    }
+    const stage = context.currentStage + 1;
+    const event: StoredMobileUpdateRolloutAdvance = {
+      createdAt: clock().toISOString(),
+      failureRate: report.failureRate,
+      format: 1,
+      promotionId: context.promotionId,
+      releaseId: channel.releaseId,
+      rollout: nextStage.rollout,
+      stage,
+      terminalReports: report.terminalReports,
+    };
+    const bytes = json(event);
+    await options.store.put(
+      `${rolloutRoot(input.appId, context.promotionId, channel.releaseId)}/advances/${String(stage).padStart(4, "0")}.json`,
+      bytes,
+      {
+        cacheControl: "no-store",
+        contentType: "application/json",
+        maxBytes: bytes.byteLength,
+        metadata: { releaseid: channel.releaseId, sha256: digest(bytes) },
+        signal: input.signal,
+      },
+    );
+
+    return (await inspectUpdateRollout(input))!;
+  };
+
+  const advanceUpdateRollout: NonNullable<
+    MobileUpdateRegistry["advanceUpdateRollout"]
+  > = (input) => advanceRollout(input, true);
+  const reconcileUpdateRollout: NonNullable<
+    MobileUpdateRegistry["reconcileUpdateRollout"]
+  > = async (input) => {
+    const report = await inspectUpdateRollout(input);
+    if (!report || !report.automatic) return report;
+
+    return advanceRollout(input, false);
+  };
+  const rolloutControl =
+    (action: StoredMobileUpdateRolloutControl["action"]) =>
+    async (input: { appId: string; channel: string; signal?: AbortSignal }) => {
+      input.signal?.throwIfAborted();
+      const channel = await readChannel(input.appId, input.channel);
+      if (!channel?.releaseId)
+        throw new MobileUpdateRegistryError(
+          "Mobile update channel does not have an active release",
+        );
+      await writeRolloutControl(channel, action, input.signal);
+
+      return (await inspectUpdateRollout(input))!;
+    };
+  const pauseUpdateRollout = rolloutControl("pause");
+  const resumeUpdateRollout = rolloutControl("resume");
+  const cancelUpdateRollout = rolloutControl("cancel");
 
   const recordUpdateHealth: NonNullable<
     MobileUpdateRegistry["recordUpdateHealth"]
@@ -1184,6 +1747,17 @@ export const createMobileUpdateRegistry = (
       );
       report = { ...report, paused: true };
     }
+
+    if (
+      rollout &&
+      (input.kind === "activated" || FAILURE_HEALTH_KINDS.has(input.kind))
+    )
+      return (
+        (await reconcileUpdateRollout({
+          appId: input.appId,
+          channel: input.channel,
+        })) ?? report
+      );
 
     return report;
   };
@@ -1517,6 +2091,16 @@ export const createMobileUpdateRegistry = (
   return {
     ...(health
       ? { inspectUpdateHealth, issueUpdateHealthToken, recordUpdateHealth }
+      : {}),
+    ...(rollout
+      ? {
+          advanceUpdateRollout,
+          cancelUpdateRollout,
+          inspectUpdateRollout,
+          pauseUpdateRollout,
+          reconcileUpdateRollout,
+          resumeUpdateRollout,
+        }
       : {}),
     inspectUpdateStorage: async (input) => (await inventory(input)).report,
     pruneUpdates,

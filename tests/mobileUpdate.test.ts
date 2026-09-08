@@ -1028,4 +1028,232 @@ describe("mobile update registry", () => {
     });
     expect(retry?.manifest.releaseId).toBe(release.manifest.releaseId);
   });
+
+  test("advances one durable rollout generation and applies operator controls", async () => {
+    const memory = memoryStore();
+    let now = new Date("2026-09-04T10:00:00.000Z");
+    const fallback = await fixture("rollout-fallback");
+    const release = await fixture("rollout-current");
+    const registry = createMobileUpdateRegistry({
+      clock: () => now,
+      health: {
+        autoPause: { failureRate: 0.5, minimumReports: 2 },
+        secret: "rollout-secret-with-at-least-thirty-two-characters",
+      },
+      publicKeys,
+      rollout: {
+        stages: [
+          {
+            maximumFailureRate: 0.1,
+            minimumReports: 2,
+            observationMs: 60 * 60 * 1000,
+            rollout: 0.5,
+          },
+          {
+            maximumFailureRate: 0.1,
+            minimumReports: 2,
+            observationMs: 0,
+            rollout: 1,
+          },
+        ],
+      },
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: fallback.manifest,
+      releaseDirectory: fallback.root,
+      rollout: 1,
+    });
+    now = new Date("2026-09-04T11:00:00.000Z");
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 0.5,
+    });
+    const selected: string[] = [];
+    for (let index = 0; selected.length < 2; index += 1) {
+      const installationId = `${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
+      const resolved = await registry.resolveUpdate({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        installationId,
+        runtimeFingerprint: release.manifest.runtimeFingerprint,
+      });
+      if (resolved?.manifest.releaseId === release.manifest.releaseId)
+        selected.push(installationId);
+    }
+    for (const installationId of selected) {
+      const token = await registry.issueUpdateHealthToken!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        installationId,
+        releaseId: release.manifest.releaseId,
+        runtimeFingerprint: release.manifest.runtimeFingerprint,
+      });
+      await registry.recordUpdateHealth!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        installationId,
+        kind: "activated",
+        releaseId: release.manifest.releaseId,
+        runtimeFingerprint: release.manifest.runtimeFingerprint,
+        token: token!,
+      });
+    }
+    const initial = await registry.inspectUpdateRollout!({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+    });
+    expect(initial).toMatchObject({
+      automatic: false,
+      currentStage: 0,
+      rollout: 0.5,
+      status: "active",
+      terminalReports: 2,
+    });
+    now = new Date("2026-09-04T11:30:00.000Z");
+    await expect(
+      registry.advanceUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).rejects.toThrow("observation");
+    now = new Date("2026-09-04T12:00:00.000Z");
+    const [advanced, concurrent] = await Promise.all([
+      registry.advanceUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+      registry.advanceUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ]);
+    expect(advanced).toMatchObject({
+      currentStage: 1,
+      promotionId: initial!.promotionId,
+      rollout: 1,
+      status: "complete",
+    });
+    expect(concurrent).toMatchObject({ currentStage: 1, rollout: 1 });
+
+    const paused = await registry.pauseUpdateRollout!({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+    });
+    expect(paused).toMatchObject({ pausedBy: "operator", status: "paused" });
+    expect(
+      (
+        await registry.resolveUpdate({
+          appId: release.manifest.appId,
+          channel: release.manifest.channel,
+          installationId: selected[0]!,
+          runtimeFingerprint: release.manifest.runtimeFingerprint,
+        })
+      )?.manifest.releaseId,
+    ).toBe(fallback.manifest.releaseId);
+    expect(
+      await registry.resumeUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).toMatchObject({ status: "complete" });
+    expect(
+      await registry.cancelUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).toMatchObject({ status: "cancelled" });
+    await expect(
+      registry.resumeUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).rejects.toThrow("already cancelled");
+  });
+
+  test("automatically advances only after the configured health gate", async () => {
+    const memory = memoryStore();
+    const fallback = await fixture("automatic-rollout-fallback");
+    const release = await fixture("automatic-rollout-current");
+    const registry = createMobileUpdateRegistry({
+      health: {
+        autoPause: { failureRate: 0.5, minimumReports: 2 },
+        secret: "automatic-rollout-secret-with-thirty-two-characters",
+      },
+      publicKeys,
+      rollout: {
+        automatic: true,
+        stages: [
+          {
+            maximumFailureRate: 0.1,
+            minimumReports: 2,
+            observationMs: 0,
+            rollout: 0.5,
+          },
+          {
+            maximumFailureRate: 0.1,
+            minimumReports: 2,
+            observationMs: 0,
+            rollout: 1,
+          },
+        ],
+      },
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: fallback.manifest,
+      releaseDirectory: fallback.root,
+      rollout: 1,
+    });
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 0.5,
+    });
+    const selected: string[] = [];
+    for (let index = 0; selected.length < 2; index += 1) {
+      const installationId = `${index.toString(16).padStart(8, "0")}-2222-4222-8222-222222222222`;
+      if (
+        (
+          await registry.resolveUpdate({
+            appId: release.manifest.appId,
+            channel: release.manifest.channel,
+            installationId,
+            runtimeFingerprint: release.manifest.runtimeFingerprint,
+          })
+        )?.manifest.releaseId === release.manifest.releaseId
+      )
+        selected.push(installationId);
+    }
+    for (const installationId of selected) {
+      const token = await registry.issueUpdateHealthToken!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        installationId,
+        releaseId: release.manifest.releaseId,
+        runtimeFingerprint: release.manifest.runtimeFingerprint,
+      });
+      await registry.recordUpdateHealth!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+        installationId,
+        kind: "activated",
+        releaseId: release.manifest.releaseId,
+        runtimeFingerprint: release.manifest.runtimeFingerprint,
+        token: token!,
+      });
+    }
+    await expect(
+      registry.inspectUpdateRollout!({
+        appId: release.manifest.appId,
+        channel: release.manifest.channel,
+      }),
+    ).resolves.toMatchObject({
+      automatic: true,
+      currentStage: 1,
+      rollout: 1,
+      status: "complete",
+    });
+  });
 });

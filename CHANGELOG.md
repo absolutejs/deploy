@@ -1,5 +1,21 @@
 # @absolutejs/deploy changelog
 
+## 0.25.12 — 2026-09-08
+
+Adds durable, health-gated orchestration for staged mobile web-bundle rollouts.
+
+- Freezes an ordered rollout plan into each promotion generation and advances it
+  through immutable stage markers, so concurrent trusted-server evaluations are
+  idempotent and a stale instance cannot regress the effective cohort.
+- Requires cumulative terminal evidence, a bounded failure rate, and an
+  observation window before each advancement. Automatic advancement is opt-in;
+  the same gate protects explicit operator advancement.
+- Adds provider-neutral inspect, advance, reconcile, pause, resume, and cancel
+  operations. Operator controls are immutable events, cancellation is terminal,
+  and a fleet-health pause still requires a fresh promotion generation.
+- Gives new channel writes an explicit unpredictable promotion identity while
+  continuing to read the derived identity used by existing channel documents.
+
 ## 0.25.0 — 2026-09-01
 
 Adds trusted staged publication for AbsoluteJS Capacitor web-bundle updates.

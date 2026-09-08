@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.11)
+### Signed mobile web-bundle updates (0.25.12)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
@@ -144,6 +144,30 @@ const updates = createMobileUpdateRegistry({
     secret: process.env.ABSOLUTE_MOBILE_UPDATE_HEALTH_SECRET!,
   },
   publicKeys: { "production-2026": process.env.MOBILE_UPDATE_PUBLIC_KEY! },
+  rollout: {
+    // Manual advancement is the safe default. Set automatic: true only when a
+    // trusted scheduler should advance as qualifying reports arrive.
+    stages: [
+      {
+        rollout: 0.05,
+        minimumReports: 20,
+        observationMs: 3_600_000,
+        maximumFailureRate: 0.05,
+      },
+      {
+        rollout: 0.25,
+        minimumReports: 100,
+        observationMs: 21_600_000,
+        maximumFailureRate: 0.05,
+      },
+      {
+        rollout: 1,
+        minimumReports: 100,
+        observationMs: 0,
+        maximumFailureRate: 0.05,
+      },
+    ],
+  },
   store,
 });
 const handleUpdate = createMobileUpdateHandler({
@@ -171,6 +195,16 @@ URLs remain readable. Publication results report newly stored and reused file
 and byte counts. Promotion only changes a
 small channel pointer, and rollback can select a prior release or the embedded
 store build without copying bundle bytes.
+
+When `rollout` is configured, the initial publication fraction must match one
+of its strictly increasing stages. `advanceUpdateRollout()` retains the exact
+promotion generation and advances only after the current stage has enough
+terminal health reports, remains below its failure ceiling, and completes its
+observation window. `reconcileUpdateRollout()` performs the same transition only
+for plans with `automatic: true`. Immutable advancement and operator-control
+events make repeated or concurrent evaluation safe. A cancelled rollout is
+terminal; an operator pause can be resumed, while an automatic fleet-health
+pause requires an explicit re-promotion.
 
 The same registry exposes `inspectUpdateStorage()` and `pruneUpdates()` for
 per-application accounting and retention. Pruning is a dry run unless
