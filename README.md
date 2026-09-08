@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.8)
+### Signed mobile web-bundle updates (0.25.9)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
@@ -120,6 +120,12 @@ the ECDSA P-256 signature and every file digest before storing anything, then
 selects staged-rollout cohorts from an anonymous installation ID. Native runtime
 fingerprints prevent a web bundle from crossing a plugin, permission, Auth, or
 local-data ABI boundary.
+
+Immutable assets advertise byte-range support with stable digest ETags. A
+conditional `Range`/`If-Range` request receives an exact `206 Content-Range`,
+an unsatisfiable range receives `416`, and a stale validator receives the full
+asset. This lets native clients resume interrupted transfers without weakening
+file-level signature and digest verification.
 
 Expo clients can additionally verify the exact manifest or rollback directive
 end-to-end with an X.509 certificate embedded in the native binary. Keep every

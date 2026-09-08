@@ -1506,7 +1506,11 @@ export const createMobileUpdateHandler = (options: {
     const origin = request.headers.get("origin");
     const cors: Record<string, string> =
       origin && allowedOrigins.has(origin)
-        ? { "access-control-allow-origin": origin, vary: "Origin" }
+        ? {
+            "access-control-allow-origin": origin,
+            "access-control-expose-headers": "content-range,etag",
+            vary: "Origin",
+          }
         : {};
     if (request.method === "OPTIONS") {
       if (!origin || !allowedOrigins.has(origin))
@@ -1516,7 +1520,7 @@ export const createMobileUpdateHandler = (options: {
         headers: {
           ...cors,
           "access-control-allow-headers":
-            "x-absolute-mobile-app,x-absolute-mobile-channel,x-absolute-mobile-installation,x-absolute-mobile-release,x-absolute-mobile-runtime",
+            "if-range,range,x-absolute-mobile-app,x-absolute-mobile-channel,x-absolute-mobile-installation,x-absolute-mobile-release,x-absolute-mobile-runtime",
           "access-control-allow-methods": "GET,OPTIONS",
           "access-control-max-age": "600",
         },
@@ -1690,19 +1694,60 @@ export const createMobileUpdateHandler = (options: {
     });
     if (!file) return new Response(null, { status: 404 });
 
-    return new Response(new Blob([new Uint8Array(file.bytes).buffer]), {
+    const etag = `"${file.file.sha256}"`;
+    const range = request.headers.get("range");
+    const useRange =
+      range !== null &&
+      (!request.headers.has("if-range") ||
+        request.headers.get("if-range") === etag);
+    let contents = file.bytes;
+    let status = 200;
+    let contentRange: string | undefined;
+    if (useRange) {
+      const parsed = /^bytes=(\d+)-(\d*)$/.exec(range);
+      const start = parsed?.[1] === undefined ? NaN : Number(parsed[1]);
+      const requestedEnd =
+        parsed?.[2] === undefined || parsed[2] === ""
+          ? file.bytes.byteLength - 1
+          : Number(parsed[2]);
+      if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(requestedEnd) ||
+        start < 0 ||
+        start >= file.bytes.byteLength ||
+        requestedEnd < start
+      )
+        return new Response(null, {
+          headers: {
+            ...cors,
+            "accept-ranges": "bytes",
+            "content-range": `bytes */${file.bytes.byteLength}`,
+            etag,
+          },
+          status: 416,
+        });
+      const end = Math.min(requestedEnd, file.bytes.byteLength - 1);
+      contents = file.bytes.slice(start, end + 1);
+      status = 206;
+      contentRange = `bytes ${start}-${end}/${file.bytes.byteLength}`;
+    }
+
+    return new Response(new Blob([new Uint8Array(contents).buffer]), {
       headers: {
         ...cors,
+        "accept-ranges": "bytes",
         "cache-control": "public, max-age=31536000, immutable",
-        "content-length": String(file.file.bytes),
+        "content-length": String(contents.byteLength),
+        ...(contentRange ? { "content-range": contentRange } : {}),
         "content-type": expoContentType(
           file.file.path.includes(".")
             ? file.file.path.slice(file.file.path.lastIndexOf(".") + 1)
             : undefined,
           false,
         ),
-        etag: `"${file.file.sha256}"`,
+        etag,
       },
+      status,
     });
   };
 };

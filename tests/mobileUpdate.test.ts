@@ -299,6 +299,32 @@ describe("mobile update registry", () => {
       ),
     );
     expect(await assetResponse.text()).toBe("app-one");
+    expect(assetResponse.headers.get("accept-ranges")).toBe("bytes");
+    const assetUrl = `https://api.example.com/__absolute/mobile/updates/production/${release.manifest.releaseId}/files/index.html`;
+    const rangeResponse = await handler(
+      new Request(assetUrl, {
+        headers: {
+          "if-range": `"${release.manifest.files[0]!.sha256}"`,
+          range: "bytes=3-",
+        },
+      }),
+    );
+    expect(rangeResponse.status).toBe(206);
+    expect(rangeResponse.headers.get("content-range")).toBe("bytes 3-6/7");
+    expect(rangeResponse.headers.get("content-length")).toBe("4");
+    expect(await rangeResponse.text()).toBe("-one");
+    const staleRange = await handler(
+      new Request(assetUrl, {
+        headers: { "if-range": '"stale"', range: "bytes=3-" },
+      }),
+    );
+    expect(staleRange.status).toBe(200);
+    expect(await staleRange.text()).toBe("app-one");
+    const unsatisfiable = await handler(
+      new Request(assetUrl, { headers: { range: "bytes=7-" } }),
+    );
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get("content-range")).toBe("bytes */7");
   });
 
   test("stores identical content once across releases while preserving release URLs", async () => {
