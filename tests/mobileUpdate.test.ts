@@ -105,9 +105,9 @@ const memoryStore = (settings: { lowercaseMetadata?: boolean } = {}) => {
   return { objects, store };
 };
 
-const fixture = async (label: string) => {
+const fixture = async (label: string, source = `app-${label}`) => {
   const root = await temporaryRoot();
-  const contents = new TextEncoder().encode(`app-${label}`);
+  const contents = new TextEncoder().encode(source);
   const sha256 = createHash("sha256").update(contents).digest("hex");
   const releaseId = `amu_${createHash("sha256").update(label).digest("hex")}`;
   const unsigned: Omit<MobileUpdateManifest, "signature"> = {
@@ -236,7 +236,7 @@ describe("mobile update registry", () => {
     });
     expect(
       [...memory.objects.keys()].some((key) =>
-        key.endsWith(`/${release.manifest.releaseId}/files/index.html`),
+        key.endsWith(`/blobs/${release.manifest.files[0]!.sha256}`),
       ),
     ).toBe(true);
     const identities = Array.from(
@@ -299,6 +299,95 @@ describe("mobile update registry", () => {
       ),
     );
     expect(await assetResponse.text()).toBe("app-one");
+  });
+
+  test("stores identical content once across releases while preserving release URLs", async () => {
+    const memory = memoryStore();
+    const first = await fixture("shared-one", "shared application bytes");
+    const second = await fixture("shared-two", "shared application bytes");
+    const registry = createMobileUpdateRegistry({
+      publicKeys,
+      store: memory.store,
+    });
+
+    const firstPublication = await registry.publishUpdate({
+      manifest: first.manifest,
+      releaseDirectory: first.root,
+      rollout: 1,
+    });
+    const secondPublication = await registry.publishUpdate({
+      manifest: second.manifest,
+      releaseDirectory: second.root,
+      rollout: 1,
+    });
+
+    expect(firstPublication).toMatchObject({
+      reusedBytes: 0,
+      reusedFiles: 0,
+      storedBytes: first.manifest.files[0]!.bytes,
+      storedFiles: 1,
+    });
+    expect(secondPublication).toMatchObject({
+      reusedBytes: second.manifest.files[0]!.bytes,
+      reusedFiles: 1,
+      storedBytes: 0,
+      storedFiles: 0,
+    });
+    expect(
+      [...memory.objects.keys()].filter((key) => key.includes("/blobs/")),
+    ).toHaveLength(1);
+    await expect(
+      registry.readUpdateFile({
+        appId: first.manifest.appId,
+        path: "index.html",
+        releaseId: first.manifest.releaseId,
+      }),
+    ).resolves.toMatchObject({ file: first.manifest.files[0] });
+    await expect(
+      registry.readUpdateFile({
+        appId: second.manifest.appId,
+        path: "index.html",
+        releaseId: second.manifest.releaseId,
+      }),
+    ).resolves.toMatchObject({ file: second.manifest.files[0] });
+  });
+
+  test("continues serving legacy release-scoped file objects", async () => {
+    const memory = memoryStore();
+    const release = await fixture("legacy-object");
+    const registry = createMobileUpdateRegistry({
+      publicKeys,
+      store: memory.store,
+    });
+    await registry.publishUpdate({
+      manifest: release.manifest,
+      releaseDirectory: release.root,
+      rollout: 1,
+    });
+    const blobKey = [...memory.objects.keys()].find((key) =>
+      key.includes("/blobs/"),
+    )!;
+    const blob = memory.objects.get(blobKey)!;
+    const appRoot = blobKey.slice(0, blobKey.indexOf("/blobs/"));
+    memory.objects.set(
+      `${appRoot}/releases/${release.manifest.releaseId}/files/index.html`,
+      {
+        ...blob,
+        metadata: {
+          releaseid: release.manifest.releaseId,
+          sha256: release.manifest.files[0]!.sha256,
+        },
+      },
+    );
+    memory.objects.delete(blobKey);
+
+    await expect(
+      registry.readUpdateFile({
+        appId: release.manifest.appId,
+        path: "index.html",
+        releaseId: release.manifest.releaseId,
+      }),
+    ).resolves.toMatchObject({ file: release.manifest.files[0] });
   });
 
   test("promotes, rolls back, and fails closed for incompatible runtimes", async () => {
@@ -387,6 +476,7 @@ describe("mobile update registry", () => {
     });
     expect(report.releaseCount).toBe(3);
     expect(report.channelCount).toBe(1);
+    expect(report.contentBlobCount).toBe(3);
     expect(report.totalBytes).toBeGreaterThan(report.releaseBytes);
     expect(
       report.releases.find(
@@ -438,6 +528,7 @@ describe("mobile update registry", () => {
       retainRecent: 0,
     });
     expect(swept.swept).toEqual([first.manifest.releaseId]);
+    expect(swept.sweptContentBlobs).toEqual([first.manifest.files[0]!.sha256]);
     expect(swept.reclaimedBytes).toBeGreaterThan(0);
     expect(
       await registry.readUpdateFile({

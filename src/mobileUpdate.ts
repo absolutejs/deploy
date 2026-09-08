@@ -77,8 +77,12 @@ export type MobileUpdateChannel = {
 export type MobileUpdatePublication = {
   appId: string;
   channel: string;
+  storedBytes?: number;
+  storedFiles?: number;
   releaseId: string;
   reused: boolean;
+  reusedBytes?: number;
+  reusedFiles?: number;
   rollout: number;
   stage: "published";
 };
@@ -111,7 +115,10 @@ export type MobileUpdateStorageRelease = {
 export type MobileUpdateStorageReport = {
   appId: string;
   channelCount: number;
+  contentBlobBytes?: number;
+  contentBlobCount?: number;
   reclaimableBytes: number;
+  reclaimableContentBytes?: number;
   releaseBytes: number;
   releaseCount: number;
   releases: MobileUpdateStorageRelease[];
@@ -126,6 +133,7 @@ export type MobileUpdatePruneResult = MobileUpdateStorageReport & {
   reclaimedBytes: number;
   restored: string[];
   swept: string[];
+  sweptContentBlobs?: string[];
 };
 
 export type MobileUpdateRetentionOptions = {
@@ -571,6 +579,8 @@ export const createMobileUpdateRegistry = (
     manifest: Pick<MobileUpdateManifest, "appId" | "releaseId">,
     file: MobileUpdateFile,
   ) => `${releaseRoot(manifest)}/files/${file.path}`;
+  const contentBlobKey = (appId: string, sha256: string) =>
+    `${root(appId)}/blobs/${sha256}`;
   const tombstoneKey = (appId: string, releaseId: string) =>
     `${root(appId)}/gc/${releaseId}.json`;
   const channelKey = (appId: string, channel: string) => {
@@ -771,6 +781,7 @@ export const createMobileUpdateRegistry = (
     input: MobileUpdateRetentionOptions,
   ): Promise<{
     objectKeysByRelease: Map<string, string[]>;
+    objectKeysByDigest: Map<string, string>;
     report: MobileUpdateStorageReport;
   }> => {
     const { minAgeMs, retainRecent } = retentionValues(input);
@@ -779,9 +790,19 @@ export const createMobileUpdateRegistry = (
     const releasePrefix = `${appRoot}releases/`;
     const channelPrefix = `${appRoot}channels/`;
     const markerPrefix = `${appRoot}gc/`;
+    const blobPrefix = `${appRoot}blobs/`;
     const objectKeysByRelease = new Map<string, string[]>();
     const objectBytesByRelease = new Map<string, number>();
+    const objectKeysByDigest = new Map<string, string>();
+    const objectBytesByDigest = new Map<string, number>();
     for (const blobObject of objects) {
+      if (blobObject.key.startsWith(blobPrefix)) {
+        const sha256 = blobObject.key.slice(blobPrefix.length);
+        if (HASH.test(sha256)) {
+          objectKeysByDigest.set(sha256, blobObject.key);
+          objectBytesByDigest.set(sha256, blobObject.size);
+        }
+      }
       if (!blobObject.key.startsWith(releasePrefix)) continue;
       const suffix = blobObject.key.slice(releasePrefix.length);
       const releaseId = suffix.slice(0, suffix.indexOf("/"));
@@ -893,6 +914,23 @@ export const createMobileUpdateRegistry = (
         };
       })
       .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const protectedReleaseIds = new Set(
+      releases
+        .filter((release) => release.protectedBy.length > 0)
+        .map((release) => release.releaseId),
+    );
+    const protectedDigests = new Set(
+      manifests
+        .filter((manifest) => protectedReleaseIds.has(manifest.releaseId))
+        .flatMap((manifest) => manifest.files.map((file) => file.sha256)),
+    );
+    const reclaimableContentBytes = [...objectBytesByDigest]
+      .filter(([sha256]) => !protectedDigests.has(sha256))
+      .reduce((total, [, bytes]) => total + bytes, 0);
+    const contentBlobBytes = [...objectBytesByDigest.values()].reduce(
+      (total, bytes) => total + bytes,
+      0,
+    );
     const releaseBytes = releases.reduce(
       (total, release) => total + release.bytes,
       0,
@@ -904,18 +942,24 @@ export const createMobileUpdateRegistry = (
 
     return {
       objectKeysByRelease,
+      objectKeysByDigest,
       report: {
         appId: input.appId,
         channelCount: channels.length,
-        reclaimableBytes: releases
-          .filter((release) => release.protectedBy.length === 0)
-          .reduce((total, release) => total + release.bytes, 0),
+        contentBlobBytes,
+        contentBlobCount: objectKeysByDigest.size,
+        reclaimableBytes:
+          releases
+            .filter((release) => release.protectedBy.length === 0)
+            .reduce((total, release) => total + release.bytes, 0) +
+          reclaimableContentBytes,
+        reclaimableContentBytes,
         releaseBytes,
         releaseCount: releases.length,
         releases,
         totalBytes,
         totalObjectCount: objects.length,
-        untrackedBytes: totalBytes - releaseBytes,
+        untrackedBytes: totalBytes - releaseBytes - contentBlobBytes,
       },
     };
   };
@@ -929,6 +973,7 @@ export const createMobileUpdateRegistry = (
       reclaimedBytes: 0,
       restored: [],
       swept: [],
+      sweptContentBlobs: [],
     };
     if (input.apply !== true) return result;
     const remove = options.store.delete;
@@ -997,6 +1042,20 @@ export const createMobileUpdateRegistry = (
       result.reclaimedBytes += candidate.bytes;
       result.swept.push(release.releaseId);
     }
+    const afterReleaseSweep = await inventory(input);
+    const referencedDigests = new Set<string>();
+    for (const release of afterReleaseSweep.report.releases) {
+      const manifest = await readManifest(input.appId, release.releaseId);
+      for (const file of manifest?.manifest.files ?? [])
+        referencedDigests.add(file.sha256);
+    }
+    for (const [sha256, key] of afterReleaseSweep.objectKeysByDigest) {
+      if (referencedDigests.has(sha256)) continue;
+      const head = await options.store.head(key);
+      await remove(key);
+      result.reclaimedBytes += head?.size ?? 0;
+      result.sweptContentBlobs!.push(sha256);
+    }
 
     return result;
   };
@@ -1019,6 +1078,10 @@ export const createMobileUpdateRegistry = (
         );
       const existing = await readManifest(manifest.appId, manifest.releaseId);
       let reused = existing !== null;
+      let storedBytes = 0;
+      let storedFiles = 0;
+      let reusedBytes = 0;
+      let reusedFiles = 0;
       if (
         existing &&
         JSON.stringify(existing.manifest) !== JSON.stringify(manifest)
@@ -1026,6 +1089,13 @@ export const createMobileUpdateRegistry = (
         throw new MobileUpdateRegistryError(
           "Published mobile update is immutable",
         );
+      if (existing) {
+        reusedBytes = manifest.files.reduce(
+          (total, file) => total + file.bytes,
+          0,
+        );
+        reusedFiles = manifest.files.length;
+      }
       if (!existing) {
         for (const file of manifest.files) {
           const local = path.join(localRoot, "files", file.path);
@@ -1038,25 +1108,29 @@ export const createMobileUpdateRegistry = (
             throw new MobileUpdateRegistryError(
               `Mobile update file ${file.path} integrity failed`,
             );
-          const key = fileKey(manifest, file);
+          const key = contentBlobKey(manifest.appId, file.sha256);
           const stored = await options.store.head(key);
           if (!stored) {
             await options.store.put(key, Bun.file(local).stream(), {
               cacheControl: "public, max-age=31536000, immutable",
               contentType: "application/octet-stream",
               maxBytes: file.bytes,
-              metadata: { releaseid: manifest.releaseId, sha256: file.sha256 },
+              metadata: { sha256: file.sha256 },
               signal: input.signal,
             });
+            storedBytes += file.bytes;
+            storedFiles += 1;
           } else if (
             stored.size !== file.bytes ||
-            stored.metadata?.sha256 !== file.sha256 ||
-            (stored.metadata?.releaseid ?? stored.metadata?.releaseId) !==
-              manifest.releaseId
+            stored.metadata?.sha256 !== file.sha256
           )
             throw new MobileUpdateRegistryError(
-              "Stored mobile update file identity changed",
+              "Stored mobile update content identity changed",
             );
+          else {
+            reusedBytes += file.bytes;
+            reusedFiles += 1;
+          }
         }
         const bytes = json(manifest);
         await options.store.put(manifestKey(manifest), bytes, {
@@ -1083,8 +1157,12 @@ export const createMobileUpdateRegistry = (
       return {
         appId: manifest.appId,
         channel: manifest.channel,
+        storedBytes,
+        storedFiles,
         releaseId: manifest.releaseId,
         reused,
+        reusedBytes,
+        reusedFiles,
         rollout: input.rollout,
         stage: "published",
       };
@@ -1152,18 +1230,23 @@ export const createMobileUpdateRegistry = (
         (candidate) => candidate.path === requested,
       );
       if (!file) return null;
-      const key = fileKey(release.manifest, file);
+      const legacyKey = fileKey(release.manifest, file);
+      const legacyHead = await options.store.head(legacyKey);
+      const key = legacyHead
+        ? legacyKey
+        : contentBlobKey(release.manifest.appId, file.sha256);
       const [bytes, head] = await Promise.all([
         options.store.get(key),
-        options.store.head(key),
+        legacyHead ? Promise.resolve(legacyHead) : options.store.head(key),
       ]);
       if (!bytes || !head) return null;
       if (
         bytes.byteLength !== file.bytes ||
         head.size !== file.bytes ||
         head.metadata?.sha256 !== file.sha256 ||
-        (head.metadata?.releaseid ?? head.metadata?.releaseId) !==
-          release.manifest.releaseId ||
+        (legacyHead &&
+          (head.metadata?.releaseid ?? head.metadata?.releaseId) !==
+            release.manifest.releaseId) ||
         digest(bytes) !== file.sha256
       )
         throw new MobileUpdateRegistryError(

@@ -112,7 +112,7 @@ version. Serialize release jobs for one Apple app because App Store Connect has
 no build-number reservation operation. Internal groups need no review. External
 review is submitted only when explicitly requested.
 
-### Signed mobile web-bundle updates (0.25.7)
+### Signed mobile web-bundle updates (0.25.8)
 
 `@absolutejs/deploy/mobile-update` publishes the signed immutable update
 directory created by `absolute mobile update build`. The trusted server verifies
@@ -155,7 +155,10 @@ export default updates;
 
 Mount `handleUpdate` at
 `/__absolute/mobile/updates/production/*`. Manifests are served without caching;
-release assets are content-verified and immutable. Promotion only changes a
+release assets are content-verified and immutable. Files are stored once by
+their signed SHA-256 digest across releases; legacy release-scoped objects and
+URLs remain readable. Publication results report newly stored and reused file
+and byte counts. Promotion only changes a
 small channel pointer, and rollback can select a prior release or the embedded
 store build without copying bundle bytes.
 
@@ -166,6 +169,8 @@ waits a seven-day grace period by default, rechecks every active and fallback
 channel reference, and only then deletes immutable objects. Five recent
 releases per channel and releases younger than 30 days are retained by default.
 Changing the policy to protect a marked release automatically restores it.
+Shared content is deleted only when no retained manifest references its digest.
+Serialize publication and pruning for each app when using a custom scheduler.
 
 ## Infrastructure providers (0.14.0)
 
