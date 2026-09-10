@@ -8,7 +8,7 @@
         "google-auth-library": "10.9.0",
       },
       "devDependencies": {
-        "@absolutejs/changelog": "^0.4.0",
+        "@absolutejs/changelog": "^0.5.1",
         "@expo/code-signing-certificates": "0.0.6",
         "@types/bun": "^1.3.14",
         "prettier": "^3.8.3",
@@ -17,7 +17,7 @@
     },
   },
   "packages": {
-    "@absolutejs/changelog": ["@absolutejs/changelog@0.4.0", "", { "dependencies": { "typescript": "^5.8.3" }, "bin": { "absolute-changelog": "dist/cli.js" } }, "sha512-4+rna0EUk1kZMGHJRmXIWvP+MV6pS4Ay24m+3h0XybYD/4ycgOXwdez7CUdb6hZQr7GC7XXTyhDzheEDAdlFcQ=="],
+    "@absolutejs/changelog": ["@absolutejs/changelog@0.5.1", "", { "dependencies": { "typescript": "^5.8.3" }, "bin": { "absolute-changelog": "dist/cli.js" } }, "sha512-6KxBk+couOvAlNrvwQOBJZt3MDS/RRyKeazRYt8tIemPXjn22oGwHKkPLploa4zS2dT0y6KCikxnOQAecbttRQ=="],
 
     "@expo/code-signing-certificates": ["@expo/code-signing-certificates@0.0.6", "", { "dependencies": { "node-forge": "^1.3.3" } }, "sha512-iNe0puxwBNEcuua9gmTGzq+SuMDa0iATai1FlFTMHJ/vUmKvN/V//drXoLJkVb5i5H3iE/n/qIJxyoBnXouD0w=="],
 
