@@ -1000,13 +1000,20 @@ describe("mobile update registry", () => {
       rolledBack: 1,
       terminalReports: 2,
     });
-    const afterPause = await registry.resolveUpdate({
+    const afterPause = await registry.resolveUpdateState!({
       appId: release.manifest.appId,
       channel: release.manifest.channel,
       installationId: healthyId,
       runtimeFingerprint: release.manifest.runtimeFingerprint,
     });
-    expect(afterPause?.manifest.releaseId).toBe(first.manifest.releaseId);
+    expect(afterPause).toMatchObject({
+      activatedAt: now.toISOString(),
+      manifest: { releaseId: first.manifest.releaseId },
+      status: "selected",
+    });
+    expect(
+      afterPause.status === "selected" ? afterPause.activationId : undefined,
+    ).toMatch(/^[a-f0-9]{64}$/);
     expect(
       [...memory.objects.values()].some(({ bytes }) =>
         new TextDecoder().decode(bytes).includes(failedId),
@@ -1170,28 +1177,72 @@ describe("mobile update registry", () => {
       channel: release.manifest.channel,
     });
     expect(paused).toMatchObject({ pausedBy: "operator", status: "paused" });
+    const pausedResolution = await registry.resolveUpdateState!({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      installationId: selected[0]!,
+      runtimeFingerprint: release.manifest.runtimeFingerprint,
+    });
+    expect(pausedResolution).toMatchObject({
+      activatedAt: now.toISOString(),
+      manifest: { releaseId: fallback.manifest.releaseId },
+      status: "selected",
+    });
     expect(
-      (
-        await registry.resolveUpdate({
-          appId: release.manifest.appId,
-          channel: release.manifest.channel,
-          installationId: selected[0]!,
-          runtimeFingerprint: release.manifest.runtimeFingerprint,
-        })
-      )?.manifest.releaseId,
-    ).toBe(fallback.manifest.releaseId);
+      pausedResolution.status === "selected"
+        ? pausedResolution.activationId
+        : undefined,
+    ).toMatch(/^[a-f0-9]{64}$/);
     expect(
       await registry.resumeUpdateRollout!({
         appId: release.manifest.appId,
         channel: release.manifest.channel,
       }),
     ).toMatchObject({ status: "complete" });
+    const resumedResolution = await registry.resolveUpdateState!({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      installationId: selected[0]!,
+      runtimeFingerprint: release.manifest.runtimeFingerprint,
+    });
+    expect(resumedResolution).toMatchObject({
+      manifest: { releaseId: release.manifest.releaseId },
+      status: "selected",
+    });
+    expect(
+      resumedResolution.status === "selected"
+        ? resumedResolution.activationId
+        : undefined,
+    ).not.toBe(
+      pausedResolution.status === "selected"
+        ? pausedResolution.activationId
+        : undefined,
+    );
     expect(
       await registry.cancelUpdateRollout!({
         appId: release.manifest.appId,
         channel: release.manifest.channel,
       }),
     ).toMatchObject({ status: "cancelled" });
+    const cancelledResolution = await registry.resolveUpdateState!({
+      appId: release.manifest.appId,
+      channel: release.manifest.channel,
+      installationId: selected[0]!,
+      runtimeFingerprint: release.manifest.runtimeFingerprint,
+    });
+    expect(cancelledResolution).toMatchObject({
+      manifest: { releaseId: fallback.manifest.releaseId },
+      status: "selected",
+    });
+    expect(
+      cancelledResolution.status === "selected"
+        ? cancelledResolution.activationId
+        : undefined,
+    ).not.toBe(
+      resumedResolution.status === "selected"
+        ? resumedResolution.activationId
+        : undefined,
+    );
     await expect(
       registry.resumeUpdateRollout!({
         appId: release.manifest.appId,

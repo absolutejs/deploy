@@ -1,5 +1,20 @@
 {
 	"contract": 1,
 	"name": "@absolutejs/deploy",
-	"releases": []
+	"releases": [
+		{
+			"changes": [
+				{
+					"kind": "fixed",
+					"summary": "Expo staged-rollout pause, resume, cancellation, and fleet fallback transitions receive stable activation identities so installed apps can select the trusted server state.",
+					"symbols": [
+						"createMobileUpdateHandler",
+						"createMobileUpdateRegistry"
+					]
+				}
+			],
+			"date": "2026-09-13",
+			"version": "0.25.14"
+		}
+	]
 }

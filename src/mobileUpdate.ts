@@ -746,6 +746,18 @@ type StoredMobileUpdateRolloutAdvance = {
   terminalReports: number;
 };
 
+type StoredMobileUpdateHealthPause = {
+  appId: string;
+  channel: string;
+  failureRate: number;
+  failures: number;
+  format: 1;
+  pausedAt: string;
+  promotionId: string;
+  releaseId: string;
+  reports: number;
+};
+
 const base64Url = (value: string | Uint8Array) =>
   Buffer.from(value).toString("base64url");
 const healthPromotionId = (channel: MobileUpdateChannel) =>
@@ -1133,6 +1145,37 @@ export const createMobileUpdateRegistry = (
 
     return value;
   };
+  const readHealthPause = async (channel: MobileUpdateChannel) => {
+    if (!channel.releaseId) return null;
+    const promotionId = healthPromotionId(channel);
+    const value = await readVerifiedObject(
+      pauseKey(channel.appId, promotionId, channel.releaseId),
+      "health pause",
+    );
+    if (value === null) return null;
+    if (
+      !object(value) ||
+      value.format !== 1 ||
+      value.appId !== channel.appId ||
+      value.channel !== channel.channel ||
+      value.promotionId !== promotionId ||
+      value.releaseId !== channel.releaseId ||
+      typeof value.failureRate !== "number" ||
+      !Number.isFinite(value.failureRate) ||
+      value.failureRate < 0 ||
+      value.failureRate > 1 ||
+      !Number.isSafeInteger(value.failures) ||
+      Number(value.failures) < 0 ||
+      !Number.isSafeInteger(value.reports) ||
+      Number(value.reports) < 1 ||
+      !iso(value.pausedAt)
+    )
+      throw new MobileUpdateRegistryError(
+        "Stored mobile update health pause is invalid",
+      );
+
+    return value as StoredMobileUpdateHealthPause;
+  };
   const rolloutContext = async (channel: MobileUpdateChannel) => {
     if (!options.store.list || !channel.releaseId) return null;
     const promotionId = healthPromotionId(channel);
@@ -1202,29 +1245,57 @@ export const createMobileUpdateRegistry = (
         );
       parsedControls.push(value as StoredMobileUpdateRolloutControl);
     }
+    parsedControls.sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    );
     const cancelled = parsedControls.some(({ action }) => action === "cancel");
     const resumedPauseIds = new Set(
       parsedControls.flatMap((control) => control.resumedPauseIds ?? []),
     );
-    const activePauseIds = parsedControls
-      .filter(
-        ({ action, id }) => action === "pause" && !resumedPauseIds.has(id),
-      )
-      .map(({ id }) => id);
-    const operatorPaused = activePauseIds.length > 0;
-    const fleetPaused = Boolean(
-      await options.store.head(
-        pauseKey(channel.appId, promotionId, channel.releaseId),
-      ),
+    const activePauseControls = parsedControls.filter(
+      ({ action, id }) => action === "pause" && !resumedPauseIds.has(id),
     );
+    const activePauseIds = activePauseControls.map(({ id }) => id);
+    const operatorPaused = activePauseIds.length > 0;
+    const fleetPause = await readHealthPause(channel);
+    const fleetPaused = fleetPause !== null;
+    const transitionControl =
+      parsedControls.find(({ action }) => action === "cancel") ??
+      activePauseControls.at(-1) ??
+      parsedControls.findLast(({ action }) => action === "resume");
+    const latestTransition =
+      fleetPause &&
+      (!transitionControl || fleetPause.pausedAt > transitionControl.createdAt)
+        ? {
+            activatedAt: fleetPause.pausedAt,
+            activationId: digest(
+              new TextEncoder().encode(
+                `${promotionId}\0fleet-pause\0${fleetPause.pausedAt}`,
+              ),
+            ),
+          }
+        : transitionControl
+          ? {
+              activatedAt: transitionControl.createdAt,
+              activationId: digest(
+                new TextEncoder().encode(
+                  `${promotionId}\0control\0${transitionControl.id}\0${transitionControl.action}`,
+                ),
+              ),
+            }
+          : undefined;
 
     return {
+      ...latestTransition,
       cancelled,
       activePauseIds,
       channel,
       currentStage,
       enteredAt,
       fleetPaused,
+      fleetPause,
       operatorPaused,
       plan,
       promotionId,
@@ -1333,6 +1404,9 @@ export const createMobileUpdateRegistry = (
     const channel = await readChannel(input.appId, input.channel);
     if (!channel?.releaseId) return { status: "empty" };
     const rolloutState = await rolloutContext(channel);
+    const healthPause =
+      rolloutState?.fleetPause ??
+      (health ? await readHealthPause(channel) : null);
     let selected = rolloutMember({
       appId: input.appId,
       channel: input.channel,
@@ -1347,14 +1421,7 @@ export const createMobileUpdateRegistry = (
       (rolloutState?.cancelled ||
         rolloutState?.fleetPaused ||
         rolloutState?.operatorPaused ||
-        (health &&
-          (await options.store.head(
-            pauseKey(
-              input.appId,
-              healthPromotionId(channel),
-              channel.releaseId,
-            ),
-          ))))
+        healthPause)
     )
       selected = channel.fallbackReleaseId;
     if (!selected) return { status: "empty" };
@@ -1366,14 +1433,28 @@ export const createMobileUpdateRegistry = (
       return { status: "incompatible" };
 
     return {
-      ...(selected === channel.releaseId &&
-      channel.activationId &&
-      channel.activatedAt
+      ...(rolloutState?.activationId && rolloutState.activatedAt
         ? {
-            activationId: channel.activationId,
-            activatedAt: channel.activatedAt,
+            activationId: rolloutState.activationId,
+            activatedAt: rolloutState.activatedAt,
           }
-        : {}),
+        : healthPause
+          ? {
+              activatedAt: healthPause.pausedAt,
+              activationId: digest(
+                new TextEncoder().encode(
+                  `${healthPromotionId(channel)}\0fleet-pause\0${healthPause.pausedAt}`,
+                ),
+              ),
+            }
+          : selected === channel.releaseId &&
+              channel.activationId &&
+              channel.activatedAt
+            ? {
+                activationId: channel.activationId,
+                activatedAt: channel.activatedAt,
+              }
+            : {}),
       manifest: release.manifest,
       manifestKey: release.key,
       status: "selected",
@@ -2719,10 +2800,16 @@ export const createMobileUpdateHandler = (options: {
         const platform = request.headers.get("expo-platform");
         if (platform !== "android" && platform !== "ios")
           return new Response(null, { status: 400 });
-        const updateId = expoUpdateId(
-          (resolution?.status === "selected"
+        const activationId =
+          resolution?.status === "selected"
             ? resolution.activationId
-            : undefined) ?? selected.manifest.releaseId,
+            : undefined;
+        const activatedAt =
+          resolution?.status === "selected"
+            ? resolution.activatedAt
+            : undefined;
+        const updateId = expoUpdateId(
+          activationId ?? selected.manifest.releaseId,
         );
         if (request.headers.get("expo-current-update-id") === updateId)
           return new Response(null, { status: 204 });
@@ -2759,10 +2846,7 @@ export const createMobileUpdateHandler = (options: {
         };
         const manifest = JSON.stringify({
           assets: platformUpdate.assets.map((asset) => protocolAsset(asset)),
-          createdAt:
-            (resolution?.status === "selected"
-              ? resolution.activatedAt
-              : undefined) ?? selected.manifest.createdAt,
+          createdAt: activatedAt ?? selected.manifest.createdAt,
           extra: {
             absolutejs: {
               channel: selected.manifest.channel,
