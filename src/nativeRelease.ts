@@ -8,13 +8,14 @@ export const NATIVE_RELEASE_REGISTRY_FORMAT = 1 as const;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const APP_ID_PATTERN = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const CERTIFICATION_ID_PATTERN = /^amobile_cert_[a-f0-9]{64}$/;
 
 export type AndroidNativeReleaseMetadata = {
   appBuild: string;
   appId: string;
   artifact: "app-release.aab";
   bytes: number;
-  engine: "capacitor";
+  engine: "capacitor" | "expo";
   format: 1;
   platform: "android";
   releaseId: string;
@@ -31,7 +32,7 @@ export type IosNativeReleaseMetadata = {
   artifact: "App.ipa";
   buildNumber?: number;
   bytes: number;
-  engine: "capacitor";
+  engine: "capacitor" | "expo";
   format: 1;
   marketingVersion: string;
   platform: "ios";
@@ -45,6 +46,65 @@ export type IosNativeReleaseMetadata = {
 export type NativeReleaseMetadata =
   | AndroidNativeReleaseMetadata
   | IosNativeReleaseMetadata;
+
+export type NativeReleaseCertificationRequirement =
+  | "installed"
+  | "simulator"
+  | "device"
+  | "store";
+
+export type NativeReleaseCertification = {
+  certificationId: string;
+  evidence: Array<{
+    artifactExactness?:
+      | "archive-equivalent"
+      | "source-equivalent"
+      | "store-delivered";
+    distribution?:
+      | "apple-processed"
+      | "registered-device"
+      | "simulator-release";
+    generatedAt: string;
+    networkUnavailable: "not-proven" | "proven";
+    remote: boolean;
+    reportSha256: string;
+    strength: NativeReleaseCertificationRequirement;
+  }>;
+  format: 1;
+  generatedAt: string;
+  release: {
+    appBuild: string;
+    appId: string;
+    artifactBytes: number;
+    artifactSha256: string;
+    buildNumber?: number;
+    engine: "capacitor" | "expo";
+    marketingVersion?: string;
+    platform: "android" | "ios";
+    releaseId: string;
+    runtime: string;
+    signed: true;
+    versionCode?: number;
+  };
+  requirement: NativeReleaseCertificationRequirement;
+  status: "certified";
+  strength: NativeReleaseCertificationRequirement;
+};
+
+export type NativeReleaseCertificationProvenance = {
+  issuer: string;
+  subject: string;
+  verifiedAt: string;
+  verificationId: string;
+};
+
+export type NativeReleaseCertificationReceipt = {
+  certificationId: string;
+  releaseId: string;
+  requirement: NativeReleaseCertificationRequirement;
+  strength: NativeReleaseCertificationRequirement;
+  provenance?: NativeReleaseCertificationProvenance;
+};
 
 export type NativeReleaseRecord = {
   artifactKey: string;
@@ -60,6 +120,7 @@ export type NativeReleaseChannel = {
   promotedAt: string;
   releaseId: string;
   sha256: string;
+  certification?: NativeReleaseCertificationReceipt;
 };
 
 export type NativeReleaseBlobObject = {
@@ -96,6 +157,7 @@ export type NativeReleaseBlobStore = {
 };
 
 export type NativeReleasePublication = {
+  certification?: NativeReleaseCertificationReceipt;
   channel?: NativeReleaseChannel;
   record: NativeReleaseRecord;
   reused: boolean;
@@ -108,11 +170,15 @@ export type NativeReleaseRegistry = {
     channel: string;
     platform: NativeReleaseMetadata["platform"];
     releaseId: string;
+    certificationId?: string;
+    certificationRequirement?: NativeReleaseCertificationRequirement;
     signal?: AbortSignal;
   }) => Promise<NativeReleaseChannel>;
   publish: (options: {
     allowUnsigned?: boolean;
     channel?: string;
+    certification?: NativeReleaseCertification;
+    certificationRequirement?: NativeReleaseCertificationRequirement;
     releaseRoot: string;
     signal?: AbortSignal;
   }) => Promise<NativeReleasePublication>;
@@ -132,9 +198,16 @@ export type NativeReleaseRegistry = {
 };
 
 export type NativeReleaseRegistryOptions = {
+  certificationVerifier?: (options: {
+    certification: NativeReleaseCertification;
+    metadata: NativeReleaseMetadata;
+    requirement: NativeReleaseCertificationRequirement;
+    signal?: AbortSignal;
+  }) => Promise<NativeReleaseCertificationProvenance>;
   clock?: () => Date;
   maxArtifactBytes?: number;
   prefix?: string;
+  requireTrustedCertification?: boolean;
   store: NativeReleaseBlobStore;
 };
 
@@ -167,13 +240,14 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
       "Native release id does not match its artifact digest",
     );
   const commonInvalid =
-    value.engine !== "capacitor" ||
+    (value.engine !== "capacitor" && value.engine !== "expo") ||
     value.format !== 1 ||
     typeof value.signed !== "boolean" ||
     !Number.isSafeInteger(value.bytes) ||
     Number(value.bytes) < 1;
   if (commonInvalid)
     throw new NativeReleaseRegistryError("Native release metadata is invalid");
+  const engine = value.engine as "capacitor" | "expo";
   if (value.platform === "android") {
     if (
       value.artifact !== "app-release.aab" ||
@@ -192,7 +266,7 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
       appId,
       artifact: "app-release.aab",
       bytes: Number(value.bytes),
-      engine: "capacitor",
+      engine,
       format: 1,
       platform: "android",
       releaseId,
@@ -224,7 +298,7 @@ const parseMetadata = (value: unknown): NativeReleaseMetadata => {
       ? {}
       : { buildNumber: Number(value.buildNumber) }),
     bytes: Number(value.bytes),
-    engine: "capacitor",
+    engine,
     format: 1,
     marketingVersion: value.marketingVersion,
     platform: "ios",
@@ -267,6 +341,241 @@ const isIsoTimestamp = (value: unknown): value is string => {
   return new Date(value).toISOString() === value;
 };
 
+const certificationRank: Record<NativeReleaseCertificationRequirement, number> =
+  {
+    installed: 0,
+    simulator: 1,
+    device: 2,
+    store: 3,
+  };
+
+const isCertificationRequirement = (
+  value: unknown,
+): value is NativeReleaseCertificationRequirement =>
+  value === "installed" ||
+  value === "simulator" ||
+  value === "device" ||
+  value === "store";
+
+const certificationSatisfies = (
+  platform: NativeReleaseMetadata["platform"],
+  strength: NativeReleaseCertificationRequirement,
+  requirement: NativeReleaseCertificationRequirement,
+) => {
+  if (platform === "android")
+    return strength === "installed" && requirement === "installed";
+  if (strength === "installed" || requirement === "installed") return false;
+
+  return certificationRank[strength] >= certificationRank[requirement];
+};
+
+const canonicalJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!isRecord(value)) return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort())
+    sorted[key] = canonicalJsonValue(value[key]);
+
+  return sorted;
+};
+
+const certificationBody = (
+  certification: Omit<NativeReleaseCertification, "certificationId">,
+) => JSON.stringify(canonicalJsonValue(certification));
+
+const expectedCertificationRelease = (metadata: NativeReleaseMetadata) => ({
+  appBuild: metadata.appBuild,
+  appId: metadata.appId,
+  artifactBytes: metadata.bytes,
+  artifactSha256: metadata.sha256,
+  ...(metadata.platform === "ios" && metadata.buildNumber !== undefined
+    ? { buildNumber: metadata.buildNumber }
+    : {}),
+  engine: metadata.engine,
+  ...(metadata.platform === "ios"
+    ? { marketingVersion: metadata.marketingVersion }
+    : {}),
+  platform: metadata.platform,
+  releaseId: metadata.releaseId,
+  runtime: metadata.runtime,
+  signed: true as const,
+  ...(metadata.platform === "android" && metadata.versionCode !== undefined
+    ? { versionCode: metadata.versionCode }
+    : {}),
+});
+
+const parseCertification = (
+  value: unknown,
+  metadata: NativeReleaseMetadata,
+): NativeReleaseCertification => {
+  if (
+    !isRecord(value) ||
+    value.format !== 1 ||
+    value.status !== "certified" ||
+    !CERTIFICATION_ID_PATTERN.test(String(value.certificationId)) ||
+    !isIsoTimestamp(value.generatedAt) ||
+    !isCertificationRequirement(value.requirement) ||
+    !isCertificationRequirement(value.strength) ||
+    !isRecord(value.release) ||
+    !Array.isArray(value.evidence) ||
+    value.evidence.length === 0 ||
+    !certificationSatisfies(
+      metadata.platform,
+      value.strength,
+      value.requirement,
+    )
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification is invalid",
+    );
+  const expectedRelease = expectedCertificationRelease(metadata);
+  if (
+    JSON.stringify(canonicalJsonValue(value.release)) !==
+    JSON.stringify(canonicalJsonValue(expectedRelease))
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification does not match the immutable release identity",
+    );
+  const evidence = value.evidence.map((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      !isIsoTimestamp(candidate.generatedAt) ||
+      !SHA256_PATTERN.test(String(candidate.reportSha256)) ||
+      !isCertificationRequirement(candidate.strength) ||
+      (candidate.networkUnavailable !== "not-proven" &&
+        candidate.networkUnavailable !== "proven") ||
+      typeof candidate.remote !== "boolean" ||
+      (candidate.artifactExactness !== undefined &&
+        candidate.artifactExactness !== "archive-equivalent" &&
+        candidate.artifactExactness !== "source-equivalent" &&
+        candidate.artifactExactness !== "store-delivered") ||
+      (candidate.distribution !== undefined &&
+        candidate.distribution !== "apple-processed" &&
+        candidate.distribution !== "registered-device" &&
+        candidate.distribution !== "simulator-release")
+    )
+      throw new NativeReleaseRegistryError(
+        "Native release certification evidence is invalid",
+      );
+
+    return {
+      ...(candidate.artifactExactness === undefined
+        ? {}
+        : {
+            artifactExactness: candidate.artifactExactness as NonNullable<
+              NativeReleaseCertification["evidence"][number]["artifactExactness"]
+            >,
+          }),
+      ...(candidate.distribution === undefined
+        ? {}
+        : {
+            distribution: candidate.distribution as NonNullable<
+              NativeReleaseCertification["evidence"][number]["distribution"]
+            >,
+          }),
+      generatedAt: candidate.generatedAt,
+      networkUnavailable: candidate.networkUnavailable as
+        | "not-proven"
+        | "proven",
+      remote: candidate.remote,
+      reportSha256: String(candidate.reportSha256),
+      strength: candidate.strength,
+    };
+  });
+  for (const item of evidence) {
+    const validAndroid =
+      metadata.platform === "android" &&
+      item.strength === "installed" &&
+      item.networkUnavailable === "proven" &&
+      item.artifactExactness === undefined &&
+      item.distribution === undefined &&
+      item.remote === false;
+    const validIosSimulator =
+      metadata.platform === "ios" &&
+      item.strength === "simulator" &&
+      item.networkUnavailable === "not-proven" &&
+      item.artifactExactness === "source-equivalent" &&
+      item.distribution === "simulator-release";
+    const validIosDevice =
+      metadata.platform === "ios" &&
+      item.strength === "device" &&
+      item.networkUnavailable === "proven" &&
+      item.artifactExactness === "archive-equivalent" &&
+      item.distribution === "registered-device";
+    const validIosStore =
+      metadata.platform === "ios" &&
+      item.strength === "store" &&
+      item.networkUnavailable === "proven" &&
+      item.artifactExactness === "store-delivered" &&
+      item.distribution === "apple-processed";
+    if (
+      !validAndroid &&
+      !validIosSimulator &&
+      !validIosDevice &&
+      !validIosStore
+    )
+      throw new NativeReleaseRegistryError(
+        "Native release certification evidence semantics are invalid",
+      );
+  }
+  const strongest = evidence.reduce(
+    (current, item) =>
+      certificationRank[item.strength] > certificationRank[current]
+        ? item.strength
+        : current,
+    evidence[0]!.strength,
+  );
+  if (strongest !== value.strength)
+    throw new NativeReleaseRegistryError(
+      "Native release certification strength does not match its evidence",
+    );
+  const certification: NativeReleaseCertification = {
+    certificationId: String(value.certificationId),
+    evidence,
+    format: 1,
+    generatedAt: value.generatedAt,
+    release: expectedRelease,
+    requirement: value.requirement,
+    status: "certified",
+    strength: value.strength,
+  };
+  const { certificationId, ...body } = certification;
+  if (
+    certificationId !==
+    `amobile_cert_${createHash("sha256").update(certificationBody(body)).digest("hex")}`
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification content digest is invalid",
+    );
+
+  return certification;
+};
+
+const parseCertificationProvenance = (
+  value: unknown,
+): NativeReleaseCertificationProvenance => {
+  if (
+    !isRecord(value) ||
+    !isIsoTimestamp(value.verifiedAt) ||
+    typeof value.issuer !== "string" ||
+    value.issuer.length === 0 ||
+    typeof value.subject !== "string" ||
+    value.subject.length === 0 ||
+    typeof value.verificationId !== "string" ||
+    value.verificationId.length === 0
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification provenance is invalid",
+    );
+
+  return {
+    issuer: value.issuer,
+    subject: value.subject,
+    verifiedAt: value.verifiedAt,
+    verificationId: value.verificationId,
+  };
+};
+
 const sha256File = async (file: Bun.BunFile) => {
   const hasher = new Bun.CryptoHasher("sha256");
   for await (const chunk of file.stream()) hasher.update(chunk);
@@ -301,6 +610,31 @@ const parseRecord = (value: unknown): NativeReleaseRecord => {
   };
 };
 
+const parseCertificationReceipt = (
+  value: unknown,
+): NativeReleaseCertificationReceipt => {
+  if (
+    !isRecord(value) ||
+    !CERTIFICATION_ID_PATTERN.test(String(value.certificationId)) ||
+    typeof value.releaseId !== "string" ||
+    !isCertificationRequirement(value.requirement) ||
+    !isCertificationRequirement(value.strength)
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification receipt is invalid",
+    );
+
+  return {
+    certificationId: String(value.certificationId),
+    releaseId: value.releaseId,
+    requirement: value.requirement,
+    strength: value.strength,
+    ...(value.provenance === undefined
+      ? {}
+      : { provenance: parseCertificationProvenance(value.provenance) }),
+  };
+};
+
 const parseChannel = (value: unknown): NativeReleaseChannel => {
   if (
     !isRecord(value) ||
@@ -319,6 +653,14 @@ const parseChannel = (value: unknown): NativeReleaseChannel => {
     throw new NativeReleaseRegistryError(
       "Native release channel identity does not match",
     );
+  const certification =
+    value.certification === undefined
+      ? undefined
+      : parseCertificationReceipt(value.certification);
+  if (certification && certification.releaseId !== releaseId)
+    throw new NativeReleaseRegistryError(
+      "Native release channel certification identity does not match",
+    );
 
   return {
     appId,
@@ -328,6 +670,7 @@ const parseChannel = (value: unknown): NativeReleaseChannel => {
     promotedAt: value.promotedAt,
     releaseId,
     sha256,
+    ...(certification ? { certification } : {}),
   };
 };
 
@@ -352,6 +695,10 @@ export const createNativeReleaseRegistry = (
     `${releaseRoot(metadata)}/release.json`;
   const artifactKey = (metadata: NativeReleaseMetadata) =>
     `${releaseRoot(metadata)}/${metadata.artifact}`;
+  const certificationKey = (
+    metadata: NativeReleaseMetadata,
+    certificationId: string,
+  ) => `${releaseRoot(metadata)}/certifications/${certificationId}.json`;
   const channelKey = (
     appId: string,
     platform: NativeReleaseMetadata["platform"],
@@ -372,6 +719,136 @@ export const createNativeReleaseRegistry = (
       throw new NativeReleaseRegistryError(
         "Stored native release artifact does not match its immutable identity",
       );
+  };
+
+  const readStoredCertification = async (
+    metadata: NativeReleaseMetadata,
+    certificationId: string,
+  ) => {
+    if (!CERTIFICATION_ID_PATTERN.test(certificationId))
+      throw new NativeReleaseRegistryError(
+        "Native release certification id is invalid",
+      );
+    const key = certificationKey(metadata, certificationId);
+    const bytes = await options.store.get(key);
+    if (!bytes) return null;
+    const stored = await options.store.head(key);
+    if (
+      !stored ||
+      stored.size !== bytes.byteLength ||
+      stored.metadata?.certificationId !== certificationId ||
+      stored.metadata?.releaseId !== metadata.releaseId ||
+      stored.metadata?.sha256 !== sha256Bytes(bytes)
+    )
+      throw new NativeReleaseRegistryError(
+        "Stored native release certification does not match its immutable identity",
+      );
+    const decoded = decodedJson(bytes);
+    if (!isRecord(decoded) || decoded.format !== 1)
+      throw new NativeReleaseRegistryError(
+        "Stored native release certification is invalid",
+      );
+    const certification = parseCertification(decoded.certification, metadata);
+    if (certification.certificationId !== certificationId)
+      throw new NativeReleaseRegistryError(
+        "Stored native release certification identity does not match",
+      );
+
+    return {
+      certification,
+      ...(decoded.provenance === undefined
+        ? {}
+        : { provenance: parseCertificationProvenance(decoded.provenance) }),
+    };
+  };
+
+  const retainCertification = async (
+    metadata: NativeReleaseMetadata,
+    value: NativeReleaseCertification,
+    requirement: NativeReleaseCertificationRequirement,
+    signal?: AbortSignal,
+  ): Promise<NativeReleaseCertificationReceipt> => {
+    const certification = parseCertification(value, metadata);
+    if (
+      !certificationSatisfies(
+        metadata.platform,
+        certification.strength,
+        requirement,
+      )
+    )
+      throw new NativeReleaseRegistryError(
+        `Native release certification does not satisfy required ${requirement} policy`,
+      );
+    const existing = await readStoredCertification(
+      metadata,
+      certification.certificationId,
+    );
+    let provenance = existing?.provenance;
+    if (existing) {
+      if (
+        JSON.stringify(existing.certification) !== JSON.stringify(certification)
+      )
+        throw new NativeReleaseRegistryError(
+          "Published native release certification is immutable",
+        );
+      if (options.requireTrustedCertification && !provenance)
+        throw new NativeReleaseRegistryError(
+          "Native release registry requires trusted certification provenance",
+        );
+    } else {
+      if (options.requireTrustedCertification && !options.certificationVerifier)
+        throw new NativeReleaseRegistryError(
+          "Native release registry requires a trusted certification verifier",
+        );
+      provenance = options.certificationVerifier
+        ? parseCertificationProvenance(
+            await options.certificationVerifier({
+              certification,
+              metadata,
+              requirement,
+              signal,
+            }),
+          )
+        : undefined;
+      if (provenance && provenance.subject !== metadata.releaseId)
+        throw new NativeReleaseRegistryError(
+          "Native release certification provenance subject does not match",
+        );
+      const storedCertification = {
+        certification,
+        format: 1 as const,
+        ...(provenance ? { provenance } : {}),
+      };
+      const serialized = encodedJson(storedCertification);
+      const key = certificationKey(metadata, certification.certificationId);
+      await options.store.put(key, serialized, {
+        cacheControl: "public, max-age=31536000, immutable",
+        contentType: "application/json",
+        maxBytes: serialized.byteLength,
+        metadata: {
+          certificationId: certification.certificationId,
+          releaseId: metadata.releaseId,
+          sha256: sha256Bytes(serialized),
+        },
+        signal,
+      });
+      const verified = await readStoredCertification(
+        metadata,
+        certification.certificationId,
+      );
+      if (!verified)
+        throw new NativeReleaseRegistryError(
+          "Native release certification retention verification failed",
+        );
+    }
+
+    return {
+      certificationId: certification.certificationId,
+      releaseId: metadata.releaseId,
+      requirement,
+      strength: certification.strength,
+      ...(provenance ? { provenance } : {}),
+    };
   };
 
   const read = async (input: {
@@ -458,6 +935,52 @@ export const createNativeReleaseRegistry = (
       throw new NativeReleaseRegistryError(
         "Unsigned native releases cannot be promoted",
       );
+    if (
+      (input.certificationId === undefined) !==
+      (input.certificationRequirement === undefined)
+    )
+      throw new NativeReleaseRegistryError(
+        "Native release promotion certification contract is incomplete",
+      );
+    if (
+      options.requireTrustedCertification &&
+      (!input.certificationId || !input.certificationRequirement)
+    )
+      throw new NativeReleaseRegistryError(
+        "Native release registry requires trusted certification for promotion",
+      );
+    let certification: NativeReleaseCertificationReceipt | undefined;
+    if (input.certificationId && input.certificationRequirement) {
+      const stored = await readStoredCertification(
+        record.metadata,
+        input.certificationId,
+      );
+      if (!stored)
+        throw new NativeReleaseRegistryError(
+          "Native release certification was not retained",
+        );
+      if (
+        !certificationSatisfies(
+          record.metadata.platform,
+          stored.certification.strength,
+          input.certificationRequirement,
+        )
+      )
+        throw new NativeReleaseRegistryError(
+          `Native release certification does not satisfy required ${input.certificationRequirement} policy`,
+        );
+      if (options.requireTrustedCertification && !stored.provenance)
+        throw new NativeReleaseRegistryError(
+          "Native release registry requires trusted certification provenance",
+        );
+      certification = {
+        certificationId: stored.certification.certificationId,
+        releaseId: record.metadata.releaseId,
+        requirement: input.certificationRequirement,
+        strength: stored.certification.strength,
+        ...(stored.provenance ? { provenance: stored.provenance } : {}),
+      };
+    }
     const key = channelKey(input.appId, input.platform, input.channel);
     const existingBytes = await options.store.get(key);
     if (existingBytes) {
@@ -470,7 +993,15 @@ export const createNativeReleaseRegistry = (
         throw new NativeReleaseRegistryError(
           "Stored native release channel identity does not match",
         );
-      if (existing.releaseId === input.releaseId) return existing;
+      if (existing.certification && !certification)
+        throw new NativeReleaseRegistryError(
+          "Certified native release channels cannot be downgraded",
+        );
+      if (
+        existing.releaseId === input.releaseId &&
+        JSON.stringify(existing.certification) === JSON.stringify(certification)
+      )
+        return existing;
     }
     const channel: NativeReleaseChannel = {
       appId: input.appId,
@@ -480,6 +1011,7 @@ export const createNativeReleaseRegistry = (
       promotedAt: clock().toISOString(),
       releaseId: record.metadata.releaseId,
       sha256: record.metadata.sha256,
+      ...(certification ? { certification } : {}),
     };
     const serialized = encodedJson(channel);
     await options.store.put(key, serialized, {
@@ -533,6 +1065,27 @@ export const createNativeReleaseRegistry = (
       if ((await sha256File(Bun.file(localArtifact))) !== metadata.sha256)
         throw new NativeReleaseRegistryError(
           "Native release artifact digest does not match its metadata",
+        );
+      if (input.certificationRequirement && !input.certification)
+        throw new NativeReleaseRegistryError(
+          `Native release publication requires ${input.certificationRequirement} certification`,
+        );
+      const certificationRequirement =
+        input.certificationRequirement ?? input.certification?.requirement;
+      const requestedCertification = input.certification
+        ? parseCertification(input.certification, metadata)
+        : undefined;
+      if (
+        requestedCertification &&
+        certificationRequirement &&
+        !certificationSatisfies(
+          metadata.platform,
+          requestedCertification.strength,
+          certificationRequirement,
+        )
+      )
+        throw new NativeReleaseRegistryError(
+          `Native release certification does not satisfy required ${certificationRequirement} policy`,
         );
       const existing = await read({
         appId: metadata.appId,
@@ -593,6 +1146,15 @@ export const createNativeReleaseRegistry = (
             "Native release publication verification failed",
           );
       }
+      const certification =
+        requestedCertification && certificationRequirement
+          ? await retainCertification(
+              metadata,
+              requestedCertification,
+              certificationRequirement,
+              input.signal,
+            )
+          : undefined;
       const channel = input.channel
         ? await promote({
             allowUnsigned: input.allowUnsigned,
@@ -600,11 +1162,22 @@ export const createNativeReleaseRegistry = (
             channel: input.channel,
             platform: metadata.platform,
             releaseId: metadata.releaseId,
+            ...(certification
+              ? {
+                  certificationId: certification.certificationId,
+                  certificationRequirement: certification.requirement,
+                }
+              : {}),
             signal: input.signal,
           })
         : undefined;
 
-      return { ...(channel ? { channel } : {}), record, reused };
+      return {
+        ...(channel ? { channel } : {}),
+        ...(certification ? { certification } : {}),
+        record,
+        reused,
+      };
     },
     read,
     resolve: async (input) => {
@@ -631,6 +1204,26 @@ export const createNativeReleaseRegistry = (
         throw new NativeReleaseRegistryError(
           "Native release channel points to a missing or invalid release",
         );
+      if (channel.certification) {
+        const stored = await readStoredCertification(
+          record.metadata,
+          channel.certification.certificationId,
+        );
+        if (
+          !stored ||
+          stored.certification.strength !== channel.certification.strength ||
+          !certificationSatisfies(
+            record.metadata.platform,
+            stored.certification.strength,
+            channel.certification.requirement,
+          ) ||
+          JSON.stringify(stored.provenance) !==
+            JSON.stringify(channel.certification.provenance)
+        )
+          throw new NativeReleaseRegistryError(
+            "Native release channel certification is missing or invalid",
+          );
+      }
 
       return { channel, record };
     },

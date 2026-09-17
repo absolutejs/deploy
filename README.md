@@ -12,7 +12,7 @@ atomically, `rollback(releaseId)` re-points the symlink and restarts.
 Zero `ssh2` / `node-ssh` dependency — `sshTarget` shells out to the system
 `ssh` / `rsync` binaries that already ship on Mac, Linux, and WSL.
 
-## Native application releases (0.22.0)
+## Native application releases (0.26.0)
 
 `@absolutejs/deploy/native-release` publishes the immutable release directory
 created by `absolute mobile build android` or `absolute mobile build ios` through
@@ -46,6 +46,20 @@ rebuilding or copying the binary. Passing `allowUnsigned: true` is required on
 both publication and promotion for intentionally non-publishable local-testing
 artifacts. The registry uses the structural BlobStore shape, so Deploy does not
 take a runtime dependency on `@absolutejs/blob` or a cloud SDK.
+
+Capacitor and Expo release metadata use the same registry contract. A caller
+may also pass AbsoluteJS's content-addressed `certification` and an explicit
+`certificationRequirement`. The registry revalidates its digest, evidence
+semantics, and complete release identity, stores it immutably beside the
+artifact, and binds a certification receipt into the promoted channel. A
+certified channel cannot be downgraded to an uncertified pointer.
+
+Hosted control planes can set `certificationVerifier` and
+`requireTrustedCertification: true`. The verifier returns bounded provenance
+(`issuer`, release-ID `subject`, `verifiedAt`, and `verificationId`) after
+checking OIDC/CI attestations or organizational policy. That provenance is
+retained with the certification and returned in publication receipts; verifier
+credentials never enter the release object.
 
 ### Google Play distribution (0.23.0)
 

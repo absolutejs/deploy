@@ -5,6 +5,28 @@
 		{
 			"changes": [
 				{
+					"kind": "added",
+					"summary": "Native release registries retain content-addressed acceptance certification and optional trusted provenance with channel promotion",
+					"symbols": [
+						"AndroidNativeReleaseMetadata",
+						"IosNativeReleaseMetadata",
+						"NativeReleaseCertification",
+						"NativeReleaseCertificationProvenance",
+						"NativeReleaseCertificationReceipt",
+						"NativeReleaseCertificationRequirement",
+						"NativeReleaseChannel",
+						"NativeReleasePublication",
+						"NativeReleaseRegistry",
+						"NativeReleaseRegistryOptions"
+					]
+				}
+			],
+			"date": "2026-09-17",
+			"version": "0.26.0"
+		},
+		{
+			"changes": [
+				{
 					"kind": "fixed",
 					"summary": "Expo staged-rollout pause, resume, cancellation, and fleet fallback transitions receive stable activation identities so installed apps can select the trusted server state.",
 					"symbols": [

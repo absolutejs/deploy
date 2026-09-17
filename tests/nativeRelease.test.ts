@@ -9,6 +9,7 @@ import {
   type AndroidNativeReleaseMetadata,
   type IosNativeReleaseMetadata,
   type NativeReleaseBlobStore,
+  type NativeReleaseCertification,
 } from "../src/nativeRelease";
 
 const roots: string[] = [];
@@ -95,6 +96,58 @@ const releaseFixture = async (label: string, signed = true) => {
   return { artifact, metadata, releaseRoot };
 };
 
+const canonicalJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (typeof value !== "object" || value === null) return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort())
+    sorted[key] = canonicalJsonValue((value as Record<string, unknown>)[key]);
+
+  return sorted;
+};
+
+const certificationFor = (
+  metadata: AndroidNativeReleaseMetadata,
+): NativeReleaseCertification => {
+  const body: Omit<NativeReleaseCertification, "certificationId"> = {
+    evidence: [
+      {
+        generatedAt: "2026-09-16T12:00:00.000Z",
+        networkUnavailable: "proven",
+        remote: false,
+        reportSha256: "b".repeat(64),
+        strength: "installed",
+      },
+    ],
+    format: 1,
+    generatedAt: "2026-09-16T12:00:00.000Z",
+    release: {
+      appBuild: metadata.appBuild,
+      appId: metadata.appId,
+      artifactBytes: metadata.bytes,
+      artifactSha256: metadata.sha256,
+      engine: metadata.engine,
+      platform: "android",
+      releaseId: metadata.releaseId,
+      runtime: metadata.runtime,
+      signed: true,
+      ...(metadata.versionCode === undefined
+        ? {}
+        : { versionCode: metadata.versionCode }),
+    },
+    requirement: "installed",
+    status: "certified",
+    strength: "installed",
+  };
+
+  return {
+    certificationId: `amobile_cert_${createHash("sha256")
+      .update(JSON.stringify(canonicalJsonValue(body)))
+      .digest("hex")}`,
+    ...body,
+  };
+};
+
 describe("native release registry", () => {
   test("publishes and resolves an immutable signed IPA", async () => {
     const memory = memoryStore();
@@ -175,6 +228,109 @@ describe("native release registry", () => {
         platform: "android",
       }),
     ).toEqual({ channel: first.channel, record: first.record });
+  });
+
+  test("retains certification and trusted provenance with the promoted release", async () => {
+    const memory = memoryStore();
+    const fixture = await releaseFixture("certified");
+    const certification = certificationFor(fixture.metadata);
+    let verifications = 0;
+    const registry = createNativeReleaseRegistry({
+      certificationVerifier: async ({ metadata, requirement }) => {
+        verifications += 1;
+        expect(requirement).toBe("installed");
+
+        return {
+          issuer: "absolutejs-paas",
+          subject: metadata.releaseId,
+          verifiedAt: "2026-09-16T12:05:00.000Z",
+          verificationId: "verification-1",
+        };
+      },
+      requireTrustedCertification: true,
+      store: memory.store,
+    });
+    await expect(
+      registry.publish({
+        certificationRequirement: "installed",
+        releaseRoot: fixture.releaseRoot,
+      }),
+    ).rejects.toThrow("requires installed certification");
+    expect(memory.puts).toHaveLength(0);
+    const first = await registry.publish({
+      certification,
+      certificationRequirement: "installed",
+      channel: "production",
+      releaseRoot: fixture.releaseRoot,
+    });
+    const second = await registry.publish({
+      certification,
+      certificationRequirement: "installed",
+      channel: "production",
+      releaseRoot: fixture.releaseRoot,
+    });
+
+    expect(verifications).toBe(1);
+    expect(first.certification).toMatchObject({
+      certificationId: certification.certificationId,
+      releaseId: fixture.metadata.releaseId,
+      requirement: "installed",
+      strength: "installed",
+      provenance: { issuer: "absolutejs-paas" },
+    });
+    expect(second.certification).toEqual(first.certification);
+    expect(first.channel?.certification).toEqual(first.certification);
+    if (!first.channel) throw new Error("expected certified channel");
+    expect(
+      memory.puts.filter((key) => key.includes("/certifications/")),
+    ).toHaveLength(1);
+    expect(
+      await registry.resolve({
+        appId: fixture.metadata.appId,
+        channel: "production",
+        platform: "android",
+      }),
+    ).toEqual({ channel: first.channel, record: first.record });
+    await expect(
+      registry.promote({
+        appId: fixture.metadata.appId,
+        channel: "uncertified",
+        platform: "android",
+        releaseId: fixture.metadata.releaseId,
+      }),
+    ).rejects.toThrow("requires trusted certification");
+    await expect(
+      registry.promote({
+        appId: fixture.metadata.appId,
+        channel: "production",
+        platform: "android",
+        releaseId: fixture.metadata.releaseId,
+      }),
+    ).rejects.toThrow("requires trusted certification");
+  });
+
+  test("accepts Expo release metadata and rejects edited certification content", async () => {
+    const memory = memoryStore();
+    const fixture = await releaseFixture("expo");
+    fixture.metadata.engine = "expo";
+    await Bun.write(
+      path.join(fixture.releaseRoot, "release.json"),
+      `${JSON.stringify(fixture.metadata)}\n`,
+    );
+    const registry = createNativeReleaseRegistry({ store: memory.store });
+    expect(
+      (await registry.publish({ releaseRoot: fixture.releaseRoot })).record
+        .metadata.engine,
+    ).toBe("expo");
+    const certification = certificationFor(fixture.metadata);
+    certification.generatedAt = "2026-09-16T12:06:00.000Z";
+    await expect(
+      registry.publish({
+        certification,
+        certificationRequirement: "installed",
+        releaseRoot: fixture.releaseRoot,
+      }),
+    ).rejects.toThrow("content digest");
   });
 
   test("rejects changed local artifacts or stored release identities", async () => {
