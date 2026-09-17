@@ -234,11 +234,24 @@ describe("native release registry", () => {
     const memory = memoryStore();
     const fixture = await releaseFixture("certified");
     const certification = certificationFor(fixture.metadata);
+    const certificationVerification = {
+      bundle: { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json" },
+      format: 1,
+      identity: {
+        issuer: "https://token.actions.githubusercontent.com",
+        ref: "refs/heads/main",
+        repository: "absolutejs/example",
+        sha: "a".repeat(40),
+        workflowPath: ".github/workflows/absolute-mobile.yml",
+      },
+      kind: "sigstore-bundle",
+    } as const;
     let verifications = 0;
     const registry = createNativeReleaseRegistry({
-      certificationVerifier: async ({ metadata, requirement }) => {
+      certificationVerifier: async ({ metadata, requirement, verification }) => {
         verifications += 1;
         expect(requirement).toBe("installed");
+        expect(verification).toEqual(certificationVerification);
 
         return {
           issuer: "absolutejs-paas",
@@ -260,12 +273,14 @@ describe("native release registry", () => {
     const first = await registry.publish({
       certification,
       certificationRequirement: "installed",
+      certificationVerification,
       channel: "production",
       releaseRoot: fixture.releaseRoot,
     });
     const second = await registry.publish({
       certification,
       certificationRequirement: "installed",
+      certificationVerification,
       channel: "production",
       releaseRoot: fixture.releaseRoot,
     });
@@ -307,6 +322,61 @@ describe("native release registry", () => {
         releaseId: fixture.metadata.releaseId,
       }),
     ).rejects.toThrow("requires trusted certification");
+  });
+
+  test("requires bounded portable verification for trusted certification", async () => {
+    const memory = memoryStore();
+    const fixture = await releaseFixture("portable-verification");
+    const certification = certificationFor(fixture.metadata);
+    const identity = {
+      issuer: "https://token.actions.githubusercontent.com",
+      ref: "refs/heads/main",
+      repository: "absolutejs/example",
+      sha: "a".repeat(40),
+      workflowPath: ".github/workflows/absolute-mobile.yml",
+    };
+    const registry = createNativeReleaseRegistry({
+      certificationVerifier: async ({ metadata }) => ({
+        issuer: "https://token.actions.githubusercontent.com",
+        subject: metadata.releaseId,
+        verifiedAt: "2026-09-17T12:05:00.000Z",
+        verificationId: "sigstore-verification-1",
+      }),
+      requireTrustedCertification: true,
+      store: memory.store,
+    });
+
+    await expect(
+      registry.publish({
+        certification,
+        certificationRequirement: "installed",
+        releaseRoot: fixture.releaseRoot,
+      }),
+    ).rejects.toThrow("requires portable certification verification");
+    await expect(
+      registry.publish({
+        certificationVerification: {
+          bundle: {},
+          format: 1,
+          identity,
+          kind: "sigstore-bundle",
+        },
+        releaseRoot: fixture.releaseRoot,
+      }),
+    ).rejects.toThrow("verification requires certification");
+    await expect(
+      registry.publish({
+        certification,
+        certificationRequirement: "installed",
+        certificationVerification: {
+          bundle: { value: "x".repeat(1_048_576) },
+          format: 1,
+          identity,
+          kind: "sigstore-bundle",
+        },
+        releaseRoot: fixture.releaseRoot,
+      }),
+    ).rejects.toThrow("exceeds the configured limit");
   });
 
   test("accepts Expo release metadata and rejects edited certification content", async () => {

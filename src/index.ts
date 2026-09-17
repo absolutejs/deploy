@@ -64,6 +64,7 @@ export type {
   NativeReleaseCertificationProvenance,
   NativeReleaseCertificationReceipt,
   NativeReleaseCertificationRequirement,
+  NativeReleaseCertificationVerification,
   NativeReleaseChannel,
   NativeReleaseMetadata,
   NativeReleasePublication,

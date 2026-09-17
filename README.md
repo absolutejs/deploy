@@ -57,9 +57,14 @@ certified channel cannot be downgraded to an uncertified pointer.
 Hosted control planes can set `certificationVerifier` and
 `requireTrustedCertification: true`. The verifier returns bounded provenance
 (`issuer`, release-ID `subject`, `verifiedAt`, and `verificationId`) after
-checking OIDC/CI attestations or organizational policy. That provenance is
-retained with the certification and returned in publication receipts; verifier
-credentials never enter the release object.
+checking the supplied `certificationVerification` envelope and organizational
+policy. Trusted mode now fails closed unless a new certification includes a
+bounded portable Sigstore bundle plus issuer, repository, workflow, ref, and
+full source SHA. The application verifier must independently allowlist those
+claims and cryptographically verify the exact certification bytes; client
+claims are never authority. Provenance is retained with the certification and
+returned in publication receipts; verifier credentials never enter the release
+object.
 
 ### Google Play distribution (0.23.0)
 

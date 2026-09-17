@@ -9,6 +9,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const APP_ID_PATTERN = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const CERTIFICATION_ID_PATTERN = /^amobile_cert_[a-f0-9]{64}$/;
+const MAX_CERTIFICATION_VERIFICATION_BYTES = 1_048_576;
 
 export type AndroidNativeReleaseMetadata = {
   appBuild: string;
@@ -98,6 +99,19 @@ export type NativeReleaseCertificationProvenance = {
   verificationId: string;
 };
 
+export type NativeReleaseCertificationVerification = {
+  bundle: Record<string, unknown>;
+  format: 1;
+  identity: {
+    issuer: string;
+    ref: string;
+    repository: string;
+    sha: string;
+    workflowPath: string;
+  };
+  kind: "sigstore-bundle";
+};
+
 export type NativeReleaseCertificationReceipt = {
   certificationId: string;
   releaseId: string;
@@ -179,6 +193,7 @@ export type NativeReleaseRegistry = {
     channel?: string;
     certification?: NativeReleaseCertification;
     certificationRequirement?: NativeReleaseCertificationRequirement;
+    certificationVerification?: NativeReleaseCertificationVerification;
     releaseRoot: string;
     signal?: AbortSignal;
   }) => Promise<NativeReleasePublication>;
@@ -203,6 +218,7 @@ export type NativeReleaseRegistryOptions = {
     metadata: NativeReleaseMetadata;
     requirement: NativeReleaseCertificationRequirement;
     signal?: AbortSignal;
+    verification?: NativeReleaseCertificationVerification;
   }) => Promise<NativeReleaseCertificationProvenance>;
   clock?: () => Date;
   maxArtifactBytes?: number;
@@ -221,6 +237,56 @@ const requireString = (value: unknown, field: string) => {
     throw new NativeReleaseRegistryError(`Native release ${field} is invalid`);
 
   return value;
+};
+
+const parseCertificationVerification = (
+  value: NativeReleaseCertificationVerification,
+): NativeReleaseCertificationVerification => {
+  if (
+    !isRecord(value) ||
+    value.format !== 1 ||
+    value.kind !== "sigstore-bundle" ||
+    !isRecord(value.identity) ||
+    !isRecord(value.bundle)
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification verification is invalid",
+    );
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    throw new NativeReleaseRegistryError(
+      "Native release certification verification is invalid",
+    );
+  }
+  if (
+    !encoded ||
+    new TextEncoder().encode(encoded).byteLength >
+      MAX_CERTIFICATION_VERIFICATION_BYTES
+  )
+    throw new NativeReleaseRegistryError(
+      "Native release certification verification exceeds the configured limit",
+    );
+
+  return {
+    bundle: value.bundle,
+    format: 1,
+    identity: {
+      issuer: requireString(value.identity.issuer, "verification issuer"),
+      ref: requireString(value.identity.ref, "verification ref"),
+      repository: requireString(
+        value.identity.repository,
+        "verification repository",
+      ),
+      sha: requireString(value.identity.sha, "verification sha"),
+      workflowPath: requireString(
+        value.identity.workflowPath,
+        "verification workflowPath",
+      ),
+    },
+    kind: "sigstore-bundle",
+  };
 };
 
 const parseMetadata = (value: unknown): NativeReleaseMetadata => {
@@ -766,6 +832,7 @@ export const createNativeReleaseRegistry = (
     metadata: NativeReleaseMetadata,
     value: NativeReleaseCertification,
     requirement: NativeReleaseCertificationRequirement,
+    verification?: NativeReleaseCertificationVerification,
     signal?: AbortSignal,
   ): Promise<NativeReleaseCertificationReceipt> => {
     const certification = parseCertification(value, metadata);
@@ -800,6 +867,10 @@ export const createNativeReleaseRegistry = (
         throw new NativeReleaseRegistryError(
           "Native release registry requires a trusted certification verifier",
         );
+      if (options.requireTrustedCertification && !verification)
+        throw new NativeReleaseRegistryError(
+          "Native release registry requires portable certification verification",
+        );
       provenance = options.certificationVerifier
         ? parseCertificationProvenance(
             await options.certificationVerifier({
@@ -807,6 +878,7 @@ export const createNativeReleaseRegistry = (
               metadata,
               requirement,
               signal,
+              ...(verification ? { verification } : {}),
             }),
           )
         : undefined;
@@ -1070,6 +1142,13 @@ export const createNativeReleaseRegistry = (
         throw new NativeReleaseRegistryError(
           `Native release publication requires ${input.certificationRequirement} certification`,
         );
+      if (input.certificationVerification && !input.certification)
+        throw new NativeReleaseRegistryError(
+          "Native release certification verification requires certification",
+        );
+      const certificationVerification = input.certificationVerification
+        ? parseCertificationVerification(input.certificationVerification)
+        : undefined;
       const certificationRequirement =
         input.certificationRequirement ?? input.certification?.requirement;
       const requestedCertification = input.certification
@@ -1152,6 +1231,7 @@ export const createNativeReleaseRegistry = (
               metadata,
               requestedCertification,
               certificationRequirement,
+              certificationVerification,
               input.signal,
             )
           : undefined;

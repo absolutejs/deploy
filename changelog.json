@@ -6,6 +6,21 @@
 			"changes": [
 				{
 					"kind": "added",
+					"summary": "Trusted native certification accepts a bounded portable Sigstore bundle and full workflow identity before retaining provenance",
+					"symbols": [
+						"NativeReleaseCertificationVerification",
+						"NativeReleaseRegistry",
+						"NativeReleaseRegistryOptions"
+					]
+				}
+			],
+			"date": "2026-09-17",
+			"version": "0.27.0"
+		},
+		{
+			"changes": [
+				{
+					"kind": "added",
 					"summary": "Native release registries retain content-addressed acceptance certification and optional trusted provenance with channel promotion",
 					"symbols": [
 						"AndroidNativeReleaseMetadata",
