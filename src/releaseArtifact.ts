@@ -56,6 +56,19 @@ const assertExclude = (value: string) => {
   return value.replace(/^\.\//, "");
 };
 
+/** A bare file name (glob allowed), matched at any depth by GNU and BusyBox tar. */
+const assertExcludeName = (value: string) => {
+  if (
+    value.length === 0 ||
+    value.startsWith("-") ||
+    value.includes("/") ||
+    /[\0\r\n]/.test(value)
+  )
+    throw new ReleaseArtifactError(`Invalid release exclusion name: ${value}`);
+
+  return value;
+};
+
 const sha256File = async (file: Blob) => {
   const hasher = new Bun.CryptoHasher("sha256");
   for await (const chunk of file.stream()) hasher.update(chunk);
@@ -64,7 +77,14 @@ const sha256File = async (file: Blob) => {
 };
 
 export const createReleaseArtifact = async (options: {
+  /** Paths from the source root, e.g. `node_modules` or `apps/web/build`. */
   exclude?: string[];
+  /**
+   * File names excluded wherever they occur, e.g. `.env` or `.env.*`. Paths
+   * in `exclude` are anchored to the root, and BusyBox tar's `*` does not
+   * cross `/`, so a nested `apps/web/.env` could not be excluded that way.
+   */
+  excludeNames?: string[];
   releaseId?: string;
   sourceRoot: string;
   temporaryRoot?: string;
@@ -87,6 +107,9 @@ export const createReleaseArtifact = async (options: {
       archivePath,
       ...(options.exclude ?? []).map(
         (value) => `--exclude=./${assertExclude(value)}`,
+      ),
+      ...(options.excludeNames ?? []).map(
+        (value) => `--exclude=${assertExcludeName(value)}`,
       ),
       "-C",
       source,
