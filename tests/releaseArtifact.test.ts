@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, readFile, rm, stat, symlink } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -24,6 +32,49 @@ afterEach(async () => {
 });
 
 describe("release artifacts", () => {
+  test("leaves out credential files by name at any depth, even unreadable ones", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(path.join(source, "apps", "web"), { recursive: true });
+    await Bun.write(path.join(source, "package.json"), '{"name":"site"}');
+    await Bun.write(path.join(source, "apps", "web", "page.ts"), "export {};");
+    const secrets = [".env", ".env.local", path.join("apps", "web", ".env")];
+    for (const secret of secrets)
+      await Bun.write(path.join(source, secret), "TOKEN=secret");
+    // Owner-only files another user cannot read: tar fails if it opens one.
+    await Promise.all(
+      secrets.map((secret) => chmod(path.join(source, secret), 0o000)),
+    );
+    const created = await createReleaseArtifact({
+      excludeNames: [".env", ".env.*"],
+      sourceRoot: source,
+      temporaryRoot: root,
+    });
+    const extracted = path.join(root, "extracted");
+    await extractReleaseArtifact({
+      archivePath: created.path,
+      destination: extracted,
+    });
+
+    expect(
+      await Bun.file(path.join(extracted, "apps", "web", "page.ts")).exists(),
+    ).toBe(true);
+    for (const secret of secrets)
+      expect(await Bun.file(path.join(extracted, secret)).exists()).toBe(false);
+    await created.dispose();
+  });
+
+  test("refuses an exclusion name that is a path or an option", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await Bun.write(path.join(source, "package.json"), '{"name":"site"}');
+    for (const name of ["apps/.env", "--to-command=sh", ""])
+      await expect(
+        createReleaseArtifact({ excludeNames: [name], sourceRoot: source }),
+      ).rejects.toBeInstanceOf(ReleaseArtifactError);
+  });
+
   test("packages, verifies, and extracts an immutable project stream", async () => {
     const root = await temporary();
     const source = path.join(root, "source");
