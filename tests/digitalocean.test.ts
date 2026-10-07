@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   createDigitalOceanClient,
+  createDigitalOceanDroplet,
+  equivalentDigitalOceanSize,
   destroyDigitalOceanDroplet,
   digitalOceanTarget,
   DigitalOceanError,
@@ -14,6 +16,7 @@ import {
   listDigitalOceanDroplets,
   type DigitalOceanClientLike,
   type DigitalOceanDroplet,
+  type DigitalOceanSize,
   type DigitalOceanTargetOptions,
 } from "../src/digitalocean";
 
@@ -462,5 +465,112 @@ describe("createDigitalOceanClient — default fetch-backed client", () => {
         "DigitalOcean API GET /droplets failed: 503 Service Unavailable: upstream connect error",
       name: "DigitalOceanError",
     });
+  });
+});
+
+const size = (
+  slug: string,
+  vcpus: number,
+  memory: number,
+  disk: number,
+  price: number,
+  regions = ["nyc1", "nyc3"],
+): DigitalOceanSize => ({
+  available: true,
+  disk,
+  memory,
+  price_monthly: price,
+  regions,
+  slug,
+  vcpus,
+});
+
+const catalog: DigitalOceanSize[] = [
+  size("s-2vcpu-4gb", 2, 4096, 80, 24, ["nyc1"]),
+  size("s-2vcpu-4gb-amd", 2, 4096, 80, 28),
+  size("s-2vcpu-4gb-intel", 2, 4096, 120, 32),
+  size("s-1vcpu-2gb", 1, 2048, 50, 12),
+  size("s-4vcpu-8gb", 4, 8192, 160, 48),
+  size("gpu-h100x1-80gb", 20, 245760, 720, 2_500),
+];
+
+const unavailable = () => {
+  throw new DigitalOceanError(
+    "DigitalOcean API POST /droplets failed: 422 Unprocessable Entity: Size is not available in this region.",
+    422,
+    { id: "unprocessable_entity", message: "Size is not available in this region." },
+  );
+};
+
+describe("droplet size substitution", () => {
+  test("picks the cheapest size there with at least the same vCPUs, memory and disk", () => {
+    expect(equivalentDigitalOceanSize(catalog, "s-2vcpu-4gb", "nyc3")?.slug).toBe(
+      "s-2vcpu-4gb-amd",
+    );
+    expect(equivalentDigitalOceanSize(catalog, "s-4vcpu-8gb", "sfo3")).toBeNull();
+    expect(equivalentDigitalOceanSize(catalog, "no-such-size", "nyc3")).toBeNull();
+  });
+
+  test("retries once with the substitute and reports it", async () => {
+    const { client, calls } = makeClient([
+      { method: "POST", pathPrefix: "/droplets", respond: unavailable },
+      {
+        method: "GET",
+        pathPrefix: "/sizes",
+        respond: () => ({ sizes: catalog }),
+      },
+      {
+        method: "POST",
+        pathPrefix: "/droplets",
+        respond: () => ({ droplet: droplet({ size_slug: "s-2vcpu-4gb-amd" }) }),
+      },
+    ]);
+    const swaps: string[] = [];
+    const created = await createDigitalOceanDroplet(
+      client,
+      { name: "node", region: "nyc3", size: "s-2vcpu-4gb" },
+      (from, to, region) => swaps.push(`${from}->${to}@${region}`),
+    );
+    expect(created.size_slug).toBe("s-2vcpu-4gb-amd");
+    expect(swaps).toEqual(["s-2vcpu-4gb->s-2vcpu-4gb-amd@nyc3"]);
+    expect((calls[2]?.body as { size: string }).size).toBe("s-2vcpu-4gb-amd");
+  });
+
+  test("says so when nothing at least as large is offered there", async () => {
+    const { client } = makeClient([
+      { method: "POST", pathPrefix: "/droplets", respond: unavailable },
+      {
+        method: "GET",
+        pathPrefix: "/sizes",
+        respond: () => ({ sizes: catalog }),
+      },
+    ]);
+    await expect(
+      createDigitalOceanDroplet(
+        client,
+        { name: "node", region: "sfo3", size: "s-4vcpu-8gb" },
+        () => {},
+      ),
+    ).rejects.toThrow(/No size with at least its vCPUs, memory and disk/);
+  });
+
+  test("other failures are not retried", async () => {
+    const { client, calls } = makeClient([
+      {
+        method: "POST",
+        pathPrefix: "/droplets",
+        respond: () => {
+          throw new DigitalOceanError(
+            "DigitalOcean API POST /droplets failed: 422 Unprocessable Entity: creating this/these droplet(s) will exceed your droplet limit",
+            422,
+            {},
+          );
+        },
+      },
+    ]);
+    await expect(
+      createDigitalOceanDroplet(client, { name: "n", region: "nyc3", size: "s-2vcpu-4gb" }),
+    ).rejects.toThrow(/droplet limit/);
+    expect(calls).toHaveLength(1);
   });
 });

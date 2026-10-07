@@ -218,6 +218,110 @@ const publicIpv4 = (droplet: DigitalOceanDroplet): string | undefined =>
  * Find a droplet by name. Returns undefined if absent.
  * Throws if more than one droplet shares the name (drifted state).
  */
+/** A droplet size, narrowed to what size substitution compares. */
+export type DigitalOceanSize = {
+  slug: string;
+  available: boolean;
+  regions: string[];
+  vcpus: number;
+  memory: number;
+  disk: number;
+  price_monthly: number;
+};
+
+const sizeUnavailable = (error: unknown) =>
+  error instanceof DigitalOceanError &&
+  error.status === 422 &&
+  /size is not available/i.test(error.message);
+
+/**
+ * The cheapest size DigitalOcean offers in `region` with at least the
+ * vCPUs, memory and disk of `size`, or `null` when there is none. GPU sizes
+ * are never substitutes.
+ */
+export const equivalentDigitalOceanSize = (
+  sizes: readonly DigitalOceanSize[],
+  size: string,
+  region: string,
+): DigitalOceanSize | null => {
+  const wanted = sizes.find((candidate) => candidate.slug === size);
+  if (!wanted) return null;
+
+  return (
+    sizes
+      .filter(
+        (candidate) =>
+          candidate.slug !== size &&
+          candidate.available &&
+          candidate.regions.includes(region) &&
+          !candidate.slug.startsWith("gpu-") &&
+          candidate.vcpus >= wanted.vcpus &&
+          candidate.memory >= wanted.memory &&
+          candidate.disk >= wanted.disk,
+      )
+      .sort(
+        (left, right) =>
+          left.price_monthly - right.price_monthly ||
+          left.vcpus - right.vcpus ||
+          left.memory - right.memory ||
+          left.slug.localeCompare(right.slug),
+      )[0] ?? null
+  );
+};
+
+/**
+ * POST /droplets. When DigitalOcean stops offering the requested size in
+ * the region ("Size is not available in this region", which happens to
+ * regular sizes in busy regions without notice), retries once with the
+ * cheapest size there that is at least as large, and reports the swap
+ * through `onSubstitute`. Any other failure is thrown as it was.
+ */
+export const createDigitalOceanDroplet = async (
+  client: DigitalOceanClientLike,
+  body: Record<string, unknown> & { region: string; size: string },
+  onSubstitute: (from: string, to: string, region: string) => void = (
+    from,
+    to,
+    region,
+  ) =>
+    console.warn(
+      `[deploy/digitalocean] ${from} is not available in ${region}; created ${to} instead`,
+    ),
+): Promise<DigitalOceanDroplet> => {
+  try {
+    const created = await client.request<{ droplet: DigitalOceanDroplet }>(
+      "POST",
+      "/droplets",
+      body,
+    );
+    return created.droplet;
+  } catch (error) {
+    if (!sizeUnavailable(error)) throw error;
+    const { sizes } = await client.request<{ sizes: DigitalOceanSize[] }>(
+      "GET",
+      "/sizes?per_page=200",
+    );
+    const substitute = equivalentDigitalOceanSize(
+      sizes,
+      body.size,
+      body.region,
+    );
+    if (!substitute)
+      throw new DigitalOceanError(
+        `${(error as Error).message} No size with at least its vCPUs, memory and disk is available there either.`,
+        422,
+        (error as DigitalOceanError).body,
+      );
+    const created = await client.request<{ droplet: DigitalOceanDroplet }>(
+      "POST",
+      "/droplets",
+      { ...body, size: substitute.slug },
+    );
+    onSubstitute(body.size, substitute.slug, body.region);
+    return created.droplet;
+  }
+};
+
 export const findDigitalOceanDroplet = async (
   client: DigitalOceanClientLike,
   name: string,
@@ -285,10 +389,7 @@ export const digitalOceanTarget = async (
 
   const hooks: CloudTargetHooks<DigitalOceanDroplet> = {
     create: async () => {
-      const created = await client.request<{ droplet: DigitalOceanDroplet }>(
-        "POST",
-        "/droplets",
-        {
+      return createDigitalOceanDroplet(client, {
           name: options.name,
           region: options.region,
           size: options.size,
@@ -303,9 +404,7 @@ export const digitalOceanTarget = async (
             : {}),
           ...(options.ipv6 === true ? { ipv6: true } : {}),
           ...(options.monitoring === true ? { monitoring: true } : {}),
-        },
-      );
-      return created.droplet;
+        });
     },
     destroy: (id) => destroyDigitalOceanDroplet({ client, id }),
     fetch: async (id) => {

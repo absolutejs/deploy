@@ -5,6 +5,23 @@
 		{
 			"changes": [
 				{
+					"detail": "DigitalOcean stops offering regular sizes in busy regions without notice and then rejects new droplets with `422 Size is not available in this region`, even though droplets of that size already run there. Droplet creation (`digitalOceanTarget`, the fleet provider, and the new `createDigitalOceanDroplet`) now retries once with the cheapest size offered in that region that has at least the requested vCPUs, memory and disk, and reports the swap through `onSizeSubstitute` (a console warning by default). Any other failure, and a region with no such size, still fails with DigitalOcean's reason. `equivalentDigitalOceanSize` exposes the choice.",
+					"kind": "added",
+					"summary": "A droplet whose size the region stops offering is created at the cheapest at-least-as-large size instead",
+					"symbols": [
+						"createDigitalOceanDroplet",
+						"equivalentDigitalOceanSize",
+						"DigitalOceanSize",
+						"DigitalOceanInfrastructureProviderOptions"
+					]
+				}
+			],
+			"date": "2026-10-07",
+			"version": "0.29.0"
+		},
+		{
+			"changes": [
+				{
 					"detail": "A failed DigitalOcean API call's error message now ends with DigitalOcean's own reason, for example `... failed: 422 Unprocessable Entity: creating this/these droplet(s) will exceed your droplet limit`. It used to stop at the status line, which left callers guessing. An error body that is not JSON is kept as text on `DigitalOceanError.body` instead of throwing a JSON parse error.",
 					"kind": "fixed",
 					"summary": "DigitalOcean API errors name DigitalOcean's reason",

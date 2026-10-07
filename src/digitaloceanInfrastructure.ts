@@ -1,6 +1,7 @@
 /** Fleet lifecycle adapter built on the canonical DigitalOcean client. */
 import {
   createDigitalOceanClient,
+  createDigitalOceanDroplet,
   destroyDigitalOceanDroplet,
   findDigitalOceanDroplet,
   listDigitalOceanDroplets,
@@ -32,6 +33,12 @@ export type DigitalOceanInfrastructureProviderOptions = {
     protocol?: "http" | "https";
   };
   client?: DigitalOceanClientLike;
+  /**
+   * Called when a region no longer offers the configured size and the node
+   * was created with the cheapest at-least-as-large size instead. Defaults
+   * to a console warning.
+   */
+  onSizeSubstitute?: (from: string, to: string, region: string) => void;
   regions: readonly DigitalOceanFleetRegion[];
   tag: string;
   token?: string;
@@ -157,9 +164,8 @@ export const createDigitalOceanInfrastructureProvider = (
         throw new Error(
           "[deploy/digitalocean] no configured fleet region is available",
         );
-      const result = await client.request<{ droplet: DigitalOceanDroplet }>(
-        "POST",
-        "/droplets",
+      const droplet = await createDigitalOceanDroplet(
+        client,
         {
           image: region.image,
           name: input.name,
@@ -174,9 +180,10 @@ export const createDigitalOceanInfrastructureProvider = (
           ...(region.ipv6 ? { ipv6: true } : {}),
           ...(region.monitoring ? { monitoring: true } : {}),
         },
+        options.onSizeSubstitute,
       );
 
-      return normalize(result.droplet);
+      return normalize(droplet);
     },
     terminateNode: async (id) =>
       destroyDigitalOceanDroplet({ client, id: parseNodeId(id) }),
