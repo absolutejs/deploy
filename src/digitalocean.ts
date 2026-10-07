@@ -21,10 +21,10 @@
  * `api.digitalocean.com`; pass your own for retry / observability.
  */
 
-import type { Target } from './targets';
-import { createCloudTarget, type CloudTargetHooks } from './cloudTarget';
+import type { Target } from "./targets";
+import { createCloudTarget, type CloudTargetHooks } from "./cloudTarget";
 
-const DO_API_BASE = 'https://api.digitalocean.com/v2';
+const DO_API_BASE = "https://api.digitalocean.com/v2";
 
 /**
  * Minimal subset of DO API calls we make. Lets callers BYO a client
@@ -32,104 +32,104 @@ const DO_API_BASE = 'https://api.digitalocean.com/v2';
  * tenant-scoped client that injects different tokens per call).
  */
 export type DigitalOceanClientLike = {
-	request: <T = unknown>(
-		method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-		path: string,
-		body?: unknown
-	) => Promise<T>;
+  request: <T = unknown>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ) => Promise<T>;
 };
 
 /** A DigitalOcean droplet record, narrowed to what we inspect. */
 export type DigitalOceanDroplet = {
-	id: number;
-	name: string;
-	status: 'new' | 'active' | 'off' | 'archive';
-	region?: { slug: string };
-	size_slug?: string;
-	networks: {
-		v4: Array<{ ip_address: string; type: 'public' | 'private' }>;
-		v6?: Array<{ ip_address: string; type: 'public' | 'private' }>;
-	};
-	tags?: string[];
+  id: number;
+  name: string;
+  status: "new" | "active" | "off" | "archive";
+  region?: { slug: string };
+  size_slug?: string;
+  networks: {
+    v4: Array<{ ip_address: string; type: "public" | "private" }>;
+    v6?: Array<{ ip_address: string; type: "public" | "private" }>;
+  };
+  tags?: string[];
 };
 
 export type DigitalOceanTargetOptions = {
-	/** API token (https://cloud.digitalocean.com/account/api/tokens). Required unless `client` is set. */
-	token?: string;
-	/** Custom client. Overrides token-built default. */
-	client?: DigitalOceanClientLike;
+  /** API token (https://cloud.digitalocean.com/account/api/tokens). Required unless `client` is set. */
+  token?: string;
+  /** Custom client. Overrides token-built default. */
+  client?: DigitalOceanClientLike;
 
-	// ── Droplet shape ────────────────────────────────────────────────
-	/** Droplet name. Also the idempotency key. */
-	name: string;
-	/** Region slug — `'nyc3'`, `'sfo3'`, `'ams3'`, etc. */
-	region: string;
-	/** Size slug — `'s-1vcpu-1gb'`, `'s-2vcpu-4gb'`, etc. */
-	size: string;
-	/** Image slug, snapshot id, or backup id. e.g. `'ubuntu-22-04-x64'`. */
-	image: string | number;
-	/** SSH key fingerprints OR numeric ids. At least one required to ssh in. */
-	sshKeys: ReadonlyArray<string | number>;
-	/** Tags applied at creation. Useful for `listDroplets({ tag })`. */
-	tags?: ReadonlyArray<string>;
-	/** cloud-init user data — a shell script or YAML config. */
-	userData?: string;
-	/** VPC UUID. Defaults to the account's default VPC for the region. */
-	vpcUuid?: string;
-	/** Enable IPv6. Default false. */
-	ipv6?: boolean;
-	/** Enable monitoring agent. Default false. */
-	monitoring?: boolean;
+  // ── Droplet shape ────────────────────────────────────────────────
+  /** Droplet name. Also the idempotency key. */
+  name: string;
+  /** Region slug — `'nyc3'`, `'sfo3'`, `'ams3'`, etc. */
+  region: string;
+  /** Size slug — `'s-1vcpu-1gb'`, `'s-2vcpu-4gb'`, etc. */
+  size: string;
+  /** Image slug, snapshot id, or backup id. e.g. `'ubuntu-22-04-x64'`. */
+  image: string | number;
+  /** SSH key fingerprints OR numeric ids. At least one required to ssh in. */
+  sshKeys: ReadonlyArray<string | number>;
+  /** Tags applied at creation. Useful for `listDroplets({ tag })`. */
+  tags?: ReadonlyArray<string>;
+  /** cloud-init user data — a shell script or YAML config. */
+  userData?: string;
+  /** VPC UUID. Defaults to the account's default VPC for the region. */
+  vpcUuid?: string;
+  /** Enable IPv6. Default false. */
+  ipv6?: boolean;
+  /** Enable monitoring agent. Default false. */
+  monitoring?: boolean;
 
-	// ── SSH wrap ────────────────────────────────────────────────────
-	/** SSH login user. Default `'root'`. */
-	user?: string;
-	/** Path to SSH identity file forwarded to sshTarget. */
-	identity?: string;
-	/** SSH port. Default 22. */
-	port?: number;
+  // ── SSH wrap ────────────────────────────────────────────────────
+  /** SSH login user. Default `'root'`. */
+  user?: string;
+  /** Path to SSH identity file forwarded to sshTarget. */
+  identity?: string;
+  /** SSH port. Default 22. */
+  port?: number;
 
-	// ── Timing ──────────────────────────────────────────────────────
-	/** Max time to wait for droplet `active` + IPv4. Default 5 min. */
-	provisionTimeoutMs?: number;
-	/** Max time to wait for SSH probe to succeed. Default 2 min. */
-	sshReadinessTimeoutMs?: number;
-	/** Poll interval for provision + ssh probe. Default 5 s. */
-	pollIntervalMs?: number;
+  // ── Timing ──────────────────────────────────────────────────────
+  /** Max time to wait for droplet `active` + IPv4. Default 5 min. */
+  provisionTimeoutMs?: number;
+  /** Max time to wait for SSH probe to succeed. Default 2 min. */
+  sshReadinessTimeoutMs?: number;
+  /** Poll interval for provision + ssh probe. Default 5 s. */
+  pollIntervalMs?: number;
 
-	// ── Observability + injection points ───────────────────────────
-	/** Called with status updates (one line each). Default: noop. */
-	onLog?: (line: string) => void;
-	/**
-	 * Override the SSH readiness probe. Default opens a TCP socket to
-	 * `host:port`. Tests pass a fake probe to skip real network IO.
-	 */
-	probeSsh?: (host: string, port: number) => Promise<boolean>;
-	/**
-	 * Sleep used between polls. Default `setTimeout`-based. Tests can
-	 * pass a synchronous resolver to skip real waits.
-	 */
-	sleep?: (ms: number) => Promise<void>;
-	/** Wall clock. Defaults to `Date.now`. Tests can swap. */
-	now?: () => number;
+  // ── Observability + injection points ───────────────────────────
+  /** Called with status updates (one line each). Default: noop. */
+  onLog?: (line: string) => void;
+  /**
+   * Override the SSH readiness probe. Default opens a TCP socket to
+   * `host:port`. Tests pass a fake probe to skip real network IO.
+   */
+  probeSsh?: (host: string, port: number) => Promise<boolean>;
+  /**
+   * Sleep used between polls. Default `setTimeout`-based. Tests can
+   * pass a synchronous resolver to skip real waits.
+   */
+  sleep?: (ms: number) => Promise<void>;
+  /** Wall clock. Defaults to `Date.now`. Tests can swap. */
+  now?: () => number;
 };
 
 export type DigitalOceanTarget = Target & {
-	readonly dropletId: number;
-	readonly ipv4: string;
-	/** Destroy the droplet via the DO API. */
-	destroy: () => Promise<void>;
+  readonly dropletId: number;
+  readonly ipv4: string;
+  /** Destroy the droplet via the DO API. */
+  destroy: () => Promise<void>;
 };
 
 export class DigitalOceanError extends Error {
-	readonly status: number;
-	readonly body: unknown;
-	constructor(message: string, status: number, body: unknown) {
-		super(message);
-		this.name = 'DigitalOceanError';
-		this.status = status;
-		this.body = body;
-	}
+  readonly status: number;
+  readonly body: unknown;
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = "DigitalOceanError";
+    this.status = status;
+    this.body = body;
+  }
 }
 
 /**
@@ -137,115 +137,141 @@ export class DigitalOceanError extends Error {
  * Throws DigitalOceanError on non-2xx with the response body attached
  * so the caller can switch on `err.status`.
  */
+const parseErrorBody = (text: string): unknown => {
+  if (text.length === 0) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
+const ERROR_REASON_LIMIT = 300;
+
+const errorReason = (body: unknown) => {
+  const message =
+    typeof body === "object" && body !== null
+      ? Reflect.get(body, "message")
+      : body;
+
+  return typeof message === "string" && message.trim().length > 0
+    ? message.trim().slice(0, ERROR_REASON_LIMIT)
+    : null;
+};
+
 export const createDigitalOceanClient = (
-	token: string,
-	options: { baseUrl?: string; fetch?: typeof fetch } = {}
+  token: string,
+  options: { baseUrl?: string; fetch?: typeof fetch } = {},
 ): DigitalOceanClientLike => {
-	const base = options.baseUrl ?? DO_API_BASE;
-	const f = options.fetch ?? fetch;
-	return {
-		request: async <T>(
-			method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-			path: string,
-			body?: unknown
-		): Promise<T> => {
-			const init: RequestInit = {
-				headers: {
-					authorization: `Bearer ${token}`,
-					'content-type': 'application/json'
-				},
-				method
-			};
-			if (body !== undefined) init.body = JSON.stringify(body);
-			const response = await f(`${base}${path}`, init);
-			if (response.status === 204) return undefined as T;
-			const text = await response.text();
-			const parsed = text.length > 0 ? JSON.parse(text) : undefined;
-			if (!response.ok) {
-				throw new DigitalOceanError(
-					`DigitalOcean API ${method} ${path} failed: ${response.status} ${response.statusText}`,
-					response.status,
-					parsed
-				);
-			}
-			return parsed as T;
-		}
-	};
+  const base = options.baseUrl ?? DO_API_BASE;
+  const f = options.fetch ?? fetch;
+  return {
+    request: async <T>(
+      method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+      path: string,
+      body?: unknown,
+    ): Promise<T> => {
+      const init: RequestInit = {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        method,
+      };
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const response = await f(`${base}${path}`, init);
+      if (response.status === 204) return undefined as T;
+      const text = await response.text();
+      if (!response.ok) {
+        const parsed = parseErrorBody(text);
+        // DigitalOcean names the cause in `message` ("creating this
+        // droplet will exceed your droplet limit", an unknown size...);
+        // a bare "422 Unprocessable Entity" leaves the caller guessing.
+        const reason = errorReason(parsed);
+        throw new DigitalOceanError(
+          `DigitalOcean API ${method} ${path} failed: ${response.status} ${response.statusText}${reason ? `: ${reason}` : ""}`,
+          response.status,
+          parsed,
+        );
+      }
+      return (text.length > 0 ? JSON.parse(text) : undefined) as T;
+    },
+  };
 };
 
 const resolveClient = (
-	options: Pick<DigitalOceanTargetOptions, 'client' | 'token'>
+  options: Pick<DigitalOceanTargetOptions, "client" | "token">,
 ): DigitalOceanClientLike => {
-	if (options.client !== undefined) return options.client;
-	if (options.token !== undefined && options.token.length > 0) {
-		return createDigitalOceanClient(options.token);
-	}
-	throw new Error(
-		'[deploy/digitalocean] either `token` or `client` must be provided'
-	);
+  if (options.client !== undefined) return options.client;
+  if (options.token !== undefined && options.token.length > 0) {
+    return createDigitalOceanClient(options.token);
+  }
+  throw new Error(
+    "[deploy/digitalocean] either `token` or `client` must be provided",
+  );
 };
 
 const publicIpv4 = (droplet: DigitalOceanDroplet): string | undefined =>
-	droplet.networks.v4.find((net) => net.type === 'public')?.ip_address;
+  droplet.networks.v4.find((net) => net.type === "public")?.ip_address;
 
 /**
  * Find a droplet by name. Returns undefined if absent.
  * Throws if more than one droplet shares the name (drifted state).
  */
 export const findDigitalOceanDroplet = async (
-	client: DigitalOceanClientLike,
-	name: string
+  client: DigitalOceanClientLike,
+  name: string,
 ): Promise<DigitalOceanDroplet | undefined> => {
-	// DO's list endpoint supports `name=` exact-match filtering.
-	const body = await client.request<{ droplets: DigitalOceanDroplet[] }>(
-		'GET',
-		`/droplets?name=${encodeURIComponent(name)}`
-	);
-	const matches = body.droplets.filter((droplet) => droplet.name === name);
-	if (matches.length === 0) return undefined;
-	if (matches.length > 1) {
-		throw new Error(
-			`[deploy/digitalocean] multiple droplets named "${name}" (${matches
-				.map((droplet) => droplet.id)
-				.join(', ')}). Resolve manually before adopting.`
-		);
-	}
-	return matches[0];
+  // DO's list endpoint supports `name=` exact-match filtering.
+  const body = await client.request<{ droplets: DigitalOceanDroplet[] }>(
+    "GET",
+    `/droplets?name=${encodeURIComponent(name)}`,
+  );
+  const matches = body.droplets.filter((droplet) => droplet.name === name);
+  if (matches.length === 0) return undefined;
+  if (matches.length > 1) {
+    throw new Error(
+      `[deploy/digitalocean] multiple droplets named "${name}" (${matches
+        .map((droplet) => droplet.id)
+        .join(", ")}). Resolve manually before adopting.`,
+    );
+  }
+  return matches[0];
 };
 
 /** List droplets, optionally filtered by tag. Useful for cleanup tasks. */
 export const listDigitalOceanDroplets = async (options: {
-	token?: string;
-	client?: DigitalOceanClientLike;
-	tag?: string;
+  token?: string;
+  client?: DigitalOceanClientLike;
+  tag?: string;
 }): Promise<DigitalOceanDroplet[]> => {
-	const client = resolveClient(options);
-	const path =
-		options.tag !== undefined
-			? `/droplets?tag_name=${encodeURIComponent(options.tag)}`
-			: '/droplets';
-	const body = await client.request<{ droplets: DigitalOceanDroplet[] }>(
-		'GET',
-		path
-	);
-	return body.droplets;
+  const client = resolveClient(options);
+  const path =
+    options.tag !== undefined
+      ? `/droplets?tag_name=${encodeURIComponent(options.tag)}`
+      : "/droplets";
+  const body = await client.request<{ droplets: DigitalOceanDroplet[] }>(
+    "GET",
+    path,
+  );
+  return body.droplets;
 };
 
 /** Destroy a droplet by id. No-op if already gone. */
 export const destroyDigitalOceanDroplet = async (options: {
-	token?: string;
-	client?: DigitalOceanClientLike;
-	id: number;
+  token?: string;
+  client?: DigitalOceanClientLike;
+  id: number;
 }): Promise<void> => {
-	const client = resolveClient(options);
-	try {
-		await client.request('DELETE', `/droplets/${options.id}`);
-	} catch (error) {
-		if (error instanceof DigitalOceanError && error.status === 404) {
-			return; // already destroyed — idempotent
-		}
-		throw error;
-	}
+  const client = resolveClient(options);
+  try {
+    await client.request("DELETE", `/droplets/${options.id}`);
+  } catch (error) {
+    if (error instanceof DigitalOceanError && error.status === 404) {
+      return; // already destroyed — idempotent
+    }
+    throw error;
+  }
 };
 
 /**
@@ -253,83 +279,81 @@ export const destroyDigitalOceanDroplet = async (options: {
  * Target. Idempotent: same name → same droplet.
  */
 export const digitalOceanTarget = async (
-	options: DigitalOceanTargetOptions
+  options: DigitalOceanTargetOptions,
 ): Promise<DigitalOceanTarget> => {
-	const client = resolveClient(options);
+  const client = resolveClient(options);
 
-	const hooks: CloudTargetHooks<DigitalOceanDroplet> = {
-		create: async () => {
-			const created = await client.request<{ droplet: DigitalOceanDroplet }>(
-				'POST',
-				'/droplets',
-				{
-					name: options.name,
-					region: options.region,
-					size: options.size,
-					image: options.image,
-					ssh_keys: [...options.sshKeys],
-					...(options.tags !== undefined
-						? { tags: [...options.tags] }
-						: {}),
-					...(options.userData !== undefined
-						? { user_data: options.userData }
-						: {}),
-					...(options.vpcUuid !== undefined
-						? { vpc_uuid: options.vpcUuid }
-						: {}),
-					...(options.ipv6 === true ? { ipv6: true } : {}),
-					...(options.monitoring === true ? { monitoring: true } : {})
-				}
-			);
-			return created.droplet;
-		},
-		destroy: (id) => destroyDigitalOceanDroplet({ client, id }),
-		fetch: async (id) => {
-			const refreshed: { droplet: DigitalOceanDroplet } = await client.request(
-				'GET',
-				`/droplets/${id}`
-			);
-			return refreshed.droplet;
-		},
-		findByName: (name) => findDigitalOceanDroplet(client, name),
-		getId: (droplet) => droplet.id,
-		getIpv4: publicIpv4,
-		getStatus: (droplet) => droplet.status,
-		isReady: (droplet) => droplet.status === 'active'
-	};
+  const hooks: CloudTargetHooks<DigitalOceanDroplet> = {
+    create: async () => {
+      const created = await client.request<{ droplet: DigitalOceanDroplet }>(
+        "POST",
+        "/droplets",
+        {
+          name: options.name,
+          region: options.region,
+          size: options.size,
+          image: options.image,
+          ssh_keys: [...options.sshKeys],
+          ...(options.tags !== undefined ? { tags: [...options.tags] } : {}),
+          ...(options.userData !== undefined
+            ? { user_data: options.userData }
+            : {}),
+          ...(options.vpcUuid !== undefined
+            ? { vpc_uuid: options.vpcUuid }
+            : {}),
+          ...(options.ipv6 === true ? { ipv6: true } : {}),
+          ...(options.monitoring === true ? { monitoring: true } : {}),
+        },
+      );
+      return created.droplet;
+    },
+    destroy: (id) => destroyDigitalOceanDroplet({ client, id }),
+    fetch: async (id) => {
+      const refreshed: { droplet: DigitalOceanDroplet } = await client.request(
+        "GET",
+        `/droplets/${id}`,
+      );
+      return refreshed.droplet;
+    },
+    findByName: (name) => findDigitalOceanDroplet(client, name),
+    getId: (droplet) => droplet.id,
+    getIpv4: publicIpv4,
+    getStatus: (droplet) => droplet.status,
+    isReady: (droplet) => droplet.status === "active",
+  };
 
-	const result = await createCloudTarget(hooks, {
-		describeTarget: (sshDescription) =>
-			`digitalocean droplet "${options.name}" (${sshDescription})`,
-		entityWord: 'droplet',
-		logPrefix: '[do]',
-		name: options.name,
-		region: options.region,
-		...(options.user !== undefined ? { user: options.user } : {}),
-		...(options.identity !== undefined ? { identity: options.identity } : {}),
-		...(options.port !== undefined ? { port: options.port } : {}),
-		...(options.provisionTimeoutMs !== undefined
-			? { provisionTimeoutMs: options.provisionTimeoutMs }
-			: {}),
-		...(options.sshReadinessTimeoutMs !== undefined
-			? { sshReadinessTimeoutMs: options.sshReadinessTimeoutMs }
-			: {}),
-		...(options.pollIntervalMs !== undefined
-			? { pollIntervalMs: options.pollIntervalMs }
-			: {}),
-		...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
-		...(options.probeSsh !== undefined ? { probeSsh: options.probeSsh } : {}),
-		...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
-		...(options.now !== undefined ? { now: options.now } : {})
-	});
+  const result = await createCloudTarget(hooks, {
+    describeTarget: (sshDescription) =>
+      `digitalocean droplet "${options.name}" (${sshDescription})`,
+    entityWord: "droplet",
+    logPrefix: "[do]",
+    name: options.name,
+    region: options.region,
+    ...(options.user !== undefined ? { user: options.user } : {}),
+    ...(options.identity !== undefined ? { identity: options.identity } : {}),
+    ...(options.port !== undefined ? { port: options.port } : {}),
+    ...(options.provisionTimeoutMs !== undefined
+      ? { provisionTimeoutMs: options.provisionTimeoutMs }
+      : {}),
+    ...(options.sshReadinessTimeoutMs !== undefined
+      ? { sshReadinessTimeoutMs: options.sshReadinessTimeoutMs }
+      : {}),
+    ...(options.pollIntervalMs !== undefined
+      ? { pollIntervalMs: options.pollIntervalMs }
+      : {}),
+    ...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
+    ...(options.probeSsh !== undefined ? { probeSsh: options.probeSsh } : {}),
+    ...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
 
-	return {
-		description: result.description,
-		destroy: result.destroy,
-		dropletId: result.id,
-		exec: result.exec,
-		ipv4: result.ipv4,
-		upload: result.upload,
-		...(result.close !== undefined ? { close: result.close } : {})
-	};
+  return {
+    description: result.description,
+    destroy: result.destroy,
+    dropletId: result.id,
+    exec: result.exec,
+    ipv4: result.ipv4,
+    upload: result.upload,
+    ...(result.close !== undefined ? { close: result.close } : {}),
+  };
 };

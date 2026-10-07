@@ -5,6 +5,17 @@
 		{
 			"changes": [
 				{
+					"detail": "A failed DigitalOcean API call's error message now ends with DigitalOcean's own reason, for example `... failed: 422 Unprocessable Entity: creating this/these droplet(s) will exceed your droplet limit`. It used to stop at the status line, which left callers guessing. An error body that is not JSON is kept as text on `DigitalOceanError.body` instead of throwing a JSON parse error.",
+					"kind": "fixed",
+					"summary": "DigitalOcean API errors name DigitalOcean's reason"
+				}
+			],
+			"date": "2026-10-07",
+			"version": "0.28.1"
+		},
+		{
+			"changes": [
+				{
 					"kind": "added",
 					"summary": "createReleaseArtifact takes excludeNames: file names (globs allowed) left out wherever they occur, such as .env or .env.*. Paths in exclude are anchored to the source root, and BusyBox tar's * does not cross /, so a nested credential file could not be excluded before; an owner-only one made the whole archive fail.",
 					"symbols": [
