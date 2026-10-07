@@ -7,7 +7,11 @@
 				{
 					"detail": "A failed DigitalOcean API call's error message now ends with DigitalOcean's own reason, for example `... failed: 422 Unprocessable Entity: creating this/these droplet(s) will exceed your droplet limit`. It used to stop at the status line, which left callers guessing. An error body that is not JSON is kept as text on `DigitalOceanError.body` instead of throwing a JSON parse error.",
 					"kind": "fixed",
-					"summary": "DigitalOcean API errors name DigitalOcean's reason"
+					"summary": "DigitalOcean API errors name DigitalOcean's reason",
+					"symbols": [
+						"DigitalOceanClientLike",
+						"DigitalOceanDroplet"
+					]
 				}
 			],
 			"date": "2026-10-07",
