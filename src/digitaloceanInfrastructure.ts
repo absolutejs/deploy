@@ -8,10 +8,13 @@ import {
   type DigitalOceanClientLike,
   type DigitalOceanDroplet,
 } from "./digitalocean";
-import type {
-  InfrastructureNode,
-  InfrastructureNodeState,
-  InfrastructureProvider,
+import { createDigitalOceanBilling } from "./digitaloceanBilling";
+import {
+  amountToMicros,
+  type InfrastructureNode,
+  type InfrastructureNodeSize,
+  type InfrastructureNodeState,
+  type InfrastructureProvider,
 } from "./infrastructure";
 
 export type DigitalOceanFleetRegion = {
@@ -65,6 +68,21 @@ const stateFor = (
   return "terminated";
 };
 
+const sizeOf = (
+  droplet: DigitalOceanDroplet,
+): InfrastructureNodeSize | undefined =>
+  droplet.size
+    ? {
+        currency: "USD",
+        diskGb: droplet.size.disk,
+        memoryMb: droplet.size.memory,
+        priceHourlyMicros: amountToMicros(droplet.size.price_hourly),
+        priceMonthlyMicros: amountToMicros(droplet.size.price_monthly),
+        slug: droplet.size.slug,
+        vcpus: droplet.size.vcpus,
+      }
+    : undefined;
+
 const parseNodeId = (id: string) => {
   const match = /^digitalocean:([1-9][0-9]*)$/.exec(id);
   if (!match?.[1])
@@ -93,6 +111,7 @@ export const createDigitalOceanInfrastructureProvider = (
     const agentHost = options.agent?.preferPrivateNetwork
       ? (privateIpv4 ?? publicIpv4)
       : (publicIpv4 ?? privateIpv4);
+    const size = sizeOf(droplet);
 
     return {
       id: `digitalocean:${droplet.id}`,
@@ -102,6 +121,8 @@ export const createDigitalOceanInfrastructureProvider = (
       state: stateFor(droplet.status),
       ...(publicIpv4 ? { publicIpv4 } : {}),
       ...(privateIpv4 ? { privateIpv4 } : {}),
+      ...(droplet.created_at ? { createdAt: droplet.created_at } : {}),
+      ...(size ? { size } : {}),
       ...(options.agent && agentHost
         ? {
             agent: {
@@ -119,6 +140,7 @@ export const createDigitalOceanInfrastructureProvider = (
     listDigitalOceanDroplets({ client, tag: options.tag });
 
   return {
+    billing: createDigitalOceanBilling({ client }),
     capabilities: {
       cloudInit: true,
       idempotentProvisioning: true,
@@ -189,3 +211,8 @@ export const createDigitalOceanInfrastructureProvider = (
       destroyDigitalOceanDroplet({ client, id: parseNodeId(id) }),
   };
 };
+
+export {
+  createDigitalOceanBilling,
+  digitalOceanLineFingerprint,
+} from "./digitaloceanBilling";

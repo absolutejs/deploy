@@ -46,6 +46,16 @@ export type DigitalOceanDroplet = {
   status: "new" | "active" | "off" | "archive";
   region?: { slug: string };
   size_slug?: string;
+  /** The droplet's size as billed: memory in MiB, disk in GB, prices in dollars. */
+  size?: {
+    disk: number;
+    memory: number;
+    price_hourly: number;
+    price_monthly: number;
+    slug: string;
+    vcpus: number;
+  };
+  created_at?: string;
   networks: {
     v4: Array<{ ip_address: string; type: "public" | "private" }>;
     v6?: Array<{ ip_address: string; type: "public" | "private" }>;
