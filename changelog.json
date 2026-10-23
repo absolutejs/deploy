@@ -5,6 +5,29 @@
 		{
 			"changes": [
 				{
+					"detail": "`InfrastructureNode` gains `size` (slug, vCPUs, memory, disk, hourly and monthly price in integer micros) and `createdAt`, filled by the DigitalOcean fleet provider. Providers may expose `billing`: `listInvoices` (final invoices and the open month's preview) and `listInvoiceLines` (per-resource lines with the provider's resource id, span and amount in micros). DigitalOcean implements it; its line fingerprints match Management's DigitalOcean import so both name a line identically. `amountToMicros` converts decimal currency strings exactly.",
+					"kind": "added",
+					"summary": "Nodes report their billed size and providers can read the account's bill (DigitalOcean)",
+					"symbols": [
+						"InfrastructureNode",
+						"InfrastructureNodeSize",
+						"InfrastructureProvider",
+						"InfrastructureBilling",
+						"InfrastructureBillLine",
+						"InfrastructureInvoice",
+						"amountToMicros",
+						"createDigitalOceanBilling",
+						"digitalOceanLineFingerprint",
+						"DigitalOceanDroplet"
+					]
+				}
+			],
+			"date": "2026-10-23",
+			"version": "0.30.0"
+		},
+		{
+			"changes": [
+				{
 					"detail": "DigitalOcean stops offering regular sizes in busy regions without notice and then rejects new droplets with `422 Size is not available in this region`, even though droplets of that size already run there. Droplet creation (`digitalOceanTarget`, the fleet provider, and the new `createDigitalOceanDroplet`) now retries once with the cheapest size offered in that region that has at least the requested vCPUs, memory and disk, and reports the swap through `onSizeSubstitute` (a console warning by default). Any other failure, and a region with no such size, still fails with DigitalOcean's reason. `equivalentDigitalOceanSize` exposes the choice.",
 					"kind": "added",
 					"summary": "A droplet whose size the region stops offering is created at the cheapest at-least-as-large size instead",
