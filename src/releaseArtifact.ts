@@ -186,6 +186,32 @@ export const receiveReleaseArtifact = async (options: {
 
 const MAX_ENTRY_DETAIL = 300;
 
+/**
+ * `--exclude` flags naming, by exact archive path, every directory whose name
+ * is excluded. A bare name is not enough when reading an archive: BusyBox tar
+ * (Alpine) honours it only while creating one, and matches the whole member
+ * path on listing and extraction, so `node_modules` left
+ * `./core/node_modules/...` in. An exact path is honoured, with everything
+ * under it, by both BusyBox and GNU tar.
+ */
+const archiveExclusions = async (archivePath: string, excludeNames: string[]) => {
+  if (excludeNames.length === 0) return [];
+  const globs = excludeNames.map((name) => new Bun.Glob(name));
+  const roots = new Set<string>();
+  const entries = (await run(["tar", "-tzf", archivePath]))
+    .split("\n")
+    .filter(Boolean);
+  for (const entry of entries) {
+    const parts = entry.replace(/\/+$/, "").split("/");
+    const index = parts.findIndex((part) =>
+      globs.some((glob) => glob.match(part)),
+    );
+    if (index >= 0) roots.add(parts.slice(0, index + 1).join("/"));
+  }
+
+  return [...roots].map((root) => `--exclude=${root}`);
+};
+
 export const extractReleaseArtifact = async (options: {
   archivePath: string;
   destination: string;
@@ -197,9 +223,12 @@ export const extractReleaseArtifact = async (options: {
    */
   excludeNames?: string[];
 }) => {
-  const excludes = (options.excludeNames ?? []).map(
-    (value) => `--exclude=${assertExcludeName(value)}`,
+  const excludes = await archiveExclusions(
+    options.archivePath,
+    (options.excludeNames ?? []).map(assertExcludeName),
   );
+  // The check reads tar's own listing under the very flags the extraction
+  // uses, so it covers exactly what is written, whichever tar this is.
   const [names, verbose] = await Promise.all([
     run(["tar", ...excludes, "-tzf", options.archivePath]),
     run(["tar", ...excludes, "-tvzf", options.archivePath]),

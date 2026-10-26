@@ -5,6 +5,19 @@
 		{
 			"changes": [
 				{
+					"kind": "fixed",
+					"summary": "`extractReleaseArtifact`'s `excludeNames` works with BusyBox tar (Alpine): reading an archive, BusyBox matched the bare name against whole member paths, so a nested `node_modules` was neither excluded nor accepted. Each excluded directory is now passed by its exact archive path, and the safety check reads tar's own listing under the same flags as the extraction",
+					"symbols": [
+						"extractReleaseArtifact"
+					]
+				}
+			],
+			"date": "2026-10-26",
+			"version": "0.31.2"
+		},
+		{
+			"changes": [
+				{
 					"kind": "changed",
 					"summary": "`extractReleaseArtifact` names the entry it refuses (`Release artifact contains an unsafe entry: <tar listing line>`), so a rejected archive says what to leave out",
 					"symbols": [
