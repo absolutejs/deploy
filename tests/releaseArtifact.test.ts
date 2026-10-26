@@ -166,4 +166,60 @@ describe("release artifacts", () => {
       }),
     ).rejects.toBeInstanceOf(ReleaseArtifactError);
   });
+
+  test("leaves excluded names out of the safety check and the extraction", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(path.join(source, "web/node_modules/.bin"), {
+      recursive: true,
+    });
+    await Bun.write(path.join(source, "package.json"), "{}");
+    await Bun.write(path.join(source, "web/index.ts"), "export {};");
+    await symlink(
+      "../cross-env/bin/cross-env.js",
+      path.join(source, "web/node_modules/.bin/cross-env"),
+    );
+    const archive = path.join(root, "workspace.tgz");
+    const process = Bun.spawn(["tar", "-czf", archive, "-C", source, "."], {
+      stderr: "pipe",
+    });
+    expect(await process.exited).toBe(0);
+    const destination = path.join(root, "extracted");
+
+    await expect(
+      extractReleaseArtifact({ archivePath: archive, destination }),
+    ).rejects.toBeInstanceOf(ReleaseArtifactError);
+    await extractReleaseArtifact({
+      archivePath: archive,
+      destination,
+      excludeNames: ["node_modules"],
+    });
+    expect(await Bun.file(path.join(destination, "web/index.ts")).exists()).toBe(
+      true,
+    );
+    await expect(
+      readFile(path.join(destination, "web/node_modules/.bin/cross-env")),
+    ).rejects.toThrow();
+  });
+
+  test("still rejects an unsafe entry outside the excluded names", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await Bun.write(path.join(source, "package.json"), "{}");
+    await symlink("/etc/passwd", path.join(source, "escape"));
+    const archive = path.join(root, "unsafe.tgz");
+    const process = Bun.spawn(["tar", "-czf", archive, "-C", source, "."], {
+      stderr: "pipe",
+    });
+    expect(await process.exited).toBe(0);
+
+    await expect(
+      extractReleaseArtifact({
+        archivePath: archive,
+        destination: path.join(root, "extracted"),
+        excludeNames: ["node_modules"],
+      }),
+    ).rejects.toBeInstanceOf(ReleaseArtifactError);
+  });
 });
