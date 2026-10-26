@@ -220,6 +220,6 @@ describe("release artifacts", () => {
         destination: path.join(root, "extracted"),
         excludeNames: ["node_modules"],
       }),
-    ).rejects.toBeInstanceOf(ReleaseArtifactError);
+    ).rejects.toThrow(/unsafe entry: l.*escape -> \/etc\/passwd/);
   });
 });

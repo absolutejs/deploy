@@ -5,6 +5,19 @@
 		{
 			"changes": [
 				{
+					"kind": "changed",
+					"summary": "`extractReleaseArtifact` names the entry it refuses (`Release artifact contains an unsafe entry: <tar listing line>`), so a rejected archive says what to leave out",
+					"symbols": [
+						"extractReleaseArtifact"
+					]
+				}
+			],
+			"date": "2026-10-26",
+			"version": "0.31.1"
+		},
+		{
+			"changes": [
+				{
 					"kind": "added",
 					"summary": "`extractReleaseArtifact` takes `excludeNames`: bare names left out at any depth, neither extracted nor held to the safety check, so an archive whose producer shipped a dependency tree's symlinks can still be received",
 					"symbols": [
