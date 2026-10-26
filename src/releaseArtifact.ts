@@ -184,6 +184,8 @@ export const receiveReleaseArtifact = async (options: {
   return { bytes, sha256: options.expectedSha256 };
 };
 
+const MAX_ENTRY_DETAIL = 300;
+
 export const extractReleaseArtifact = async (options: {
   archivePath: string;
   destination: string;
@@ -205,16 +207,20 @@ export const extractReleaseArtifact = async (options: {
   const unsafePath = names
     .split("\n")
     .filter(Boolean)
-    .some(
+    .find(
       (entry) =>
         entry.startsWith("/") || entry.split("/").some((part) => part === ".."),
     );
+  // `tar -tv` lines start with the entry type; the name is the last field.
   const unsafeType = verbose
     .split("\n")
     .filter(Boolean)
-    .some((entry) => entry[0] !== "-" && entry[0] !== "d");
-  if (unsafePath || unsafeType)
-    throw new ReleaseArtifactError("Release artifact contains an unsafe entry");
+    .find((entry) => entry[0] !== "-" && entry[0] !== "d");
+  const unsafe = unsafePath ?? unsafeType;
+  if (unsafe !== undefined)
+    throw new ReleaseArtifactError(
+      `Release artifact contains an unsafe entry: ${unsafe.slice(0, MAX_ENTRY_DETAIL)}`,
+    );
   await rm(options.destination, { force: true, recursive: true });
   await mkdir(options.destination, { recursive: true });
   await run([
