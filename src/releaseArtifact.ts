@@ -187,10 +187,20 @@ export const receiveReleaseArtifact = async (options: {
 export const extractReleaseArtifact = async (options: {
   archivePath: string;
   destination: string;
+  /**
+   * Bare names left out at any depth: neither extracted nor held to the
+   * safety check. For archives that may carry disposable state the receiver
+   * never wants, such as a dependency tree's symlinks, written by a producer
+   * that did not leave it out itself.
+   */
+  excludeNames?: string[];
 }) => {
+  const excludes = (options.excludeNames ?? []).map(
+    (value) => `--exclude=${assertExcludeName(value)}`,
+  );
   const [names, verbose] = await Promise.all([
-    run(["tar", "-tzf", options.archivePath]),
-    run(["tar", "-tvzf", options.archivePath]),
+    run(["tar", ...excludes, "-tzf", options.archivePath]),
+    run(["tar", ...excludes, "-tvzf", options.archivePath]),
   ]);
   const unsafePath = names
     .split("\n")
@@ -209,6 +219,7 @@ export const extractReleaseArtifact = async (options: {
   await mkdir(options.destination, { recursive: true });
   await run([
     "tar",
+    ...excludes,
     "-xzf",
     options.archivePath,
     "--no-same-owner",
