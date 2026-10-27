@@ -4,6 +4,7 @@ import {
   createDigitalOceanDroplet,
   destroyDigitalOceanDroplet,
   findDigitalOceanDroplet,
+  isDigitalOceanSizeUnavailable,
   listDigitalOceanDroplets,
   type DigitalOceanClientLike,
   type DigitalOceanDroplet,
@@ -42,6 +43,14 @@ export type DigitalOceanInfrastructureProviderOptions = {
    * to a console warning.
    */
   onSizeSubstitute?: (from: string, to: string, region: string) => void;
+  /**
+   * Called when a region refused to create the node because it offers
+   * neither the configured size nor anything comparable, before the next
+   * configured region is tried. A region can stop offering every size
+   * without notice (nyc3, 2026-10-27), so a fleet with more than one region
+   * keeps creating hosts while one refuses.
+   */
+  onRegionRefused?: (region: string, reason: string) => void;
   regions: readonly DigitalOceanFleetRegion[];
   tag: string;
   token?: string;
@@ -136,8 +145,7 @@ export const createDigitalOceanInfrastructureProvider = (
     };
   };
 
-  const list = () =>
-    listDigitalOceanDroplets({ client, tag: options.tag });
+  const list = () => listDigitalOceanDroplets({ client, tag: options.tag });
 
   return {
     billing: createDigitalOceanBilling({ client }),
@@ -169,43 +177,59 @@ export const createDigitalOceanInfrastructureProvider = (
         throw new Error(
           `[deploy/digitalocean] region ${input.region} is not configured`,
         );
-      const counts = new Map(
-        eligible.map((region) => [region.region, 0]),
-      );
+      const counts = new Map(eligible.map((region) => [region.region, 0]));
       for (const droplet of droplets) {
         const region = droplet.region?.slug;
         if (region && counts.has(region))
           counts.set(region, (counts.get(region) ?? 0) + 1);
       }
-      const regionName = [...counts].sort(
-        (left, right) =>
-          left[1] - right[1] || left[0].localeCompare(right[0]),
-      )[0]?.[0];
-      const region = regionName ? configuredRegions.get(regionName) : undefined;
-      if (!region)
+      // Fewest droplets first, which spreads the fleet; the rest are where
+      // a refused create goes next.
+      const ordered = [...counts]
+        .sort(
+          (left, right) =>
+            left[1] - right[1] || left[0].localeCompare(right[0]),
+        )
+        .map(([name]) => configuredRegions.get(name))
+        .filter((region): region is DigitalOceanFleetRegion => Boolean(region));
+      if (ordered.length === 0)
         throw new Error(
           "[deploy/digitalocean] no configured fleet region is available",
         );
-      const droplet = await createDigitalOceanDroplet(
-        client,
-        {
-          image: region.image,
-          name: input.name,
-          region: region.region,
-          size: region.size,
-          ssh_keys: [...region.sshKeys],
-          tags: [options.tag],
-          ...(input.userData ?? region.userData
-            ? { user_data: input.userData ?? region.userData }
-            : {}),
-          ...(region.vpcUuid ? { vpc_uuid: region.vpcUuid } : {}),
-          ...(region.ipv6 ? { ipv6: true } : {}),
-          ...(region.monitoring ? { monitoring: true } : {}),
-        },
-        options.onSizeSubstitute,
-      );
+      const refusals: string[] = [];
+      for (const region of ordered) {
+        try {
+          const droplet = await createDigitalOceanDroplet(
+            client,
+            {
+              image: region.image,
+              name: input.name,
+              region: region.region,
+              size: region.size,
+              ssh_keys: [...region.sshKeys],
+              tags: [options.tag],
+              ...((input.userData ?? region.userData)
+                ? { user_data: input.userData ?? region.userData }
+                : {}),
+              ...(region.vpcUuid ? { vpc_uuid: region.vpcUuid } : {}),
+              ...(region.ipv6 ? { ipv6: true } : {}),
+              ...(region.monitoring ? { monitoring: true } : {}),
+            },
+            options.onSizeSubstitute,
+          );
 
-      return normalize(droplet);
+          return normalize(droplet);
+        } catch (error) {
+          if (!isDigitalOceanSizeUnavailable(error)) throw error;
+          const reason = (error as Error).message;
+          refusals.push(`${region.region}: ${reason}`);
+          options.onRegionRefused?.(region.region, reason);
+        }
+      }
+
+      throw new Error(
+        `[deploy/digitalocean] every configured region refused the node: ${refusals.join("; ")}`,
+      );
     },
     terminateNode: async (id) =>
       destroyDigitalOceanDroplet({ client, id: parseNodeId(id) }),
