@@ -239,10 +239,13 @@ export type DigitalOceanSize = {
   price_monthly: number;
 };
 
-const sizeUnavailable = (error: unknown) =>
+/** Whether DigitalOcean refused a create because the region does not offer
+ *  the size (after substitution, because it offers nothing comparable). */
+export const isDigitalOceanSizeUnavailable = (error: unknown) =>
   error instanceof DigitalOceanError &&
   error.status === 422 &&
   /size is not available/i.test(error.message);
+const sizeUnavailable = isDigitalOceanSizeUnavailable;
 
 /**
  * The cheapest size DigitalOcean offers in `region` with at least the
@@ -400,21 +403,19 @@ export const digitalOceanTarget = async (
   const hooks: CloudTargetHooks<DigitalOceanDroplet> = {
     create: async () => {
       return createDigitalOceanDroplet(client, {
-          name: options.name,
-          region: options.region,
-          size: options.size,
-          image: options.image,
-          ssh_keys: [...options.sshKeys],
-          ...(options.tags !== undefined ? { tags: [...options.tags] } : {}),
-          ...(options.userData !== undefined
-            ? { user_data: options.userData }
-            : {}),
-          ...(options.vpcUuid !== undefined
-            ? { vpc_uuid: options.vpcUuid }
-            : {}),
-          ...(options.ipv6 === true ? { ipv6: true } : {}),
-          ...(options.monitoring === true ? { monitoring: true } : {}),
-        });
+        name: options.name,
+        region: options.region,
+        size: options.size,
+        image: options.image,
+        ssh_keys: [...options.sshKeys],
+        ...(options.tags !== undefined ? { tags: [...options.tags] } : {}),
+        ...(options.userData !== undefined
+          ? { user_data: options.userData }
+          : {}),
+        ...(options.vpcUuid !== undefined ? { vpc_uuid: options.vpcUuid } : {}),
+        ...(options.ipv6 === true ? { ipv6: true } : {}),
+        ...(options.monitoring === true ? { monitoring: true } : {}),
+      });
     },
     destroy: (id) => destroyDigitalOceanDroplet({ client, id }),
     fetch: async (id) => {
