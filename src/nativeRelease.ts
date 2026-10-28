@@ -10,6 +10,8 @@ const APP_ID_PATTERN = /^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/;
 const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const CERTIFICATION_ID_PATTERN = /^amobile_cert_[a-f0-9]{64}$/;
 const MAX_CERTIFICATION_VERIFICATION_BYTES = 1_048_576;
+const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/;
+const GIT_SHA_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 export type AndroidNativeReleaseMetadata = {
   appBuild: string;
@@ -120,11 +122,39 @@ export type NativeReleaseCertificationReceipt = {
   provenance?: NativeReleaseCertificationProvenance;
 };
 
-export type NativeReleaseRecord = {
+/** The GitHub Actions run that built and verified an artifact the registry
+ *  does not hold. Its build attestation is found by the release digest
+ *  (`GET /repos/{repository}/attestations/sha256:{digest}`). */
+export type NativeReleaseArtifactProvenance = {
+  kind: "github-actions";
+  repository: string;
+  runAttempt: number;
+  runId: number;
+  sha: string;
+  workflowRef: string;
+};
+
+/** A release whose bytes the registry stores and checks on every read. */
+export type StoredNativeReleaseRecord = {
   artifactKey: string;
   format: typeof NATIVE_RELEASE_REGISTRY_FORMAT;
   metadata: NativeReleaseMetadata;
 };
+
+/** A release recorded by digest and provenance only: the store it is
+ *  delivered to (App Store Connect, Google Play) holds the bytes. */
+export type ExternalNativeReleaseRecord = {
+  artifact: {
+    provenance: NativeReleaseArtifactProvenance;
+    retention: "external";
+  };
+  format: typeof NATIVE_RELEASE_REGISTRY_FORMAT;
+  metadata: NativeReleaseMetadata;
+};
+
+export type NativeReleaseRecord =
+  | StoredNativeReleaseRecord
+  | ExternalNativeReleaseRecord;
 
 export type NativeReleaseChannel = {
   appId: string;
@@ -221,6 +251,15 @@ export type NativeReleaseRegistryOptions = {
     verification?: NativeReleaseCertificationVerification;
   }) => Promise<NativeReleaseCertificationProvenance>;
   clock?: () => Date;
+  /** Record new releases by digest and provenance without storing their
+   *  bytes. Publication still checks the local artifact's size and digest;
+   *  promotion never needs the bytes, because the destination store keeps
+   *  the exact build. Releases already stored with their bytes still read. */
+  externalArtifacts?: {
+    provenance: () =>
+      | NativeReleaseArtifactProvenance
+      | Promise<NativeReleaseArtifactProvenance>;
+  };
   maxArtifactBytes?: number;
   prefix?: string;
   requireTrustedCertification?: boolean;
@@ -660,17 +699,80 @@ const sameMetadata = (
   right: NativeReleaseMetadata,
 ) => JSON.stringify(left) === JSON.stringify(right);
 
-const parseRecord = (value: unknown): NativeReleaseRecord => {
+const parseArtifactProvenance = (
+  value: unknown,
+): NativeReleaseArtifactProvenance => {
   if (
     !isRecord(value) ||
-    value.format !== NATIVE_RELEASE_REGISTRY_FORMAT ||
-    typeof value.artifactKey !== "string"
+    value.kind !== "github-actions" ||
+    typeof value.repository !== "string" ||
+    !GITHUB_REPOSITORY_PATTERN.test(value.repository) ||
+    !Number.isSafeInteger(value.runId) ||
+    Number(value.runId) < 1 ||
+    !Number.isSafeInteger(value.runAttempt) ||
+    Number(value.runAttempt) < 1 ||
+    typeof value.sha !== "string" ||
+    !GIT_SHA_PATTERN.test(value.sha) ||
+    typeof value.workflowRef !== "string" ||
+    !value.workflowRef.startsWith(`${value.repository}/.github/workflows/`) ||
+    !value.workflowRef.includes("@")
   )
-    throw new NativeReleaseRegistryError("Native release record is invalid");
-  const metadata = parseMetadata(value.metadata);
+    throw new NativeReleaseRegistryError(
+      "Native release artifact provenance is invalid",
+    );
 
   return {
-    artifactKey: value.artifactKey,
+    kind: "github-actions",
+    repository: value.repository,
+    runAttempt: Number(value.runAttempt),
+    runId: Number(value.runId),
+    sha: value.sha,
+    workflowRef: value.workflowRef,
+  };
+};
+
+/** Provenance for an artifact built in the current GitHub Actions run, read
+ *  from the runner's default environment variables. */
+export const githubActionsArtifactProvenance = (
+  env: Record<string, string | undefined> = process.env,
+): NativeReleaseArtifactProvenance => {
+  if (env.GITHUB_ACTIONS !== "true")
+    throw new NativeReleaseRegistryError(
+      "GitHub Actions artifact provenance requires a GitHub Actions run",
+    );
+
+  return parseArtifactProvenance({
+    kind: "github-actions",
+    repository: env.GITHUB_REPOSITORY,
+    runAttempt: Number(env.GITHUB_RUN_ATTEMPT),
+    runId: Number(env.GITHUB_RUN_ID),
+    sha: env.GITHUB_SHA,
+    workflowRef: env.GITHUB_WORKFLOW_REF,
+  });
+};
+
+const parseRecord = (value: unknown): NativeReleaseRecord => {
+  if (!isRecord(value) || value.format !== NATIVE_RELEASE_REGISTRY_FORMAT)
+    throw new NativeReleaseRegistryError("Native release record is invalid");
+  const metadata = parseMetadata(value.metadata);
+  if (typeof value.artifactKey === "string" && value.artifact === undefined)
+    return {
+      artifactKey: value.artifactKey,
+      format: NATIVE_RELEASE_REGISTRY_FORMAT,
+      metadata,
+    };
+  if (
+    value.artifactKey !== undefined ||
+    !isRecord(value.artifact) ||
+    value.artifact.retention !== "external"
+  )
+    throw new NativeReleaseRegistryError("Native release record is invalid");
+
+  return {
+    artifact: {
+      provenance: parseArtifactProvenance(value.artifact.provenance),
+      retention: "external",
+    },
     format: NATIVE_RELEASE_REGISTRY_FORMAT,
     metadata,
   };
@@ -988,12 +1090,16 @@ export const createNativeReleaseRegistry = (
       record.metadata.appId !== input.appId ||
       record.metadata.platform !== input.platform ||
       record.metadata.releaseId !== input.releaseId ||
-      record.artifactKey !== artifactKey(record.metadata)
+      ("artifactKey" in record &&
+        record.artifactKey !== artifactKey(record.metadata))
     )
       throw new NativeReleaseRegistryError(
         "Stored native release record identity does not match",
       );
-    await requireStoredArtifact(record.artifactKey, record.metadata);
+    // An external record's bytes live with the store it was delivered to;
+    // its digest is the release id, already checked against the metadata.
+    if ("artifactKey" in record)
+      await requireStoredArtifact(record.artifactKey, record.metadata);
 
     return record;
   };
@@ -1180,6 +1286,17 @@ export const createNativeReleaseRegistry = (
           );
         record = existing;
         reused = true;
+      } else if (options.externalArtifacts) {
+        record = {
+          artifact: {
+            provenance: parseArtifactProvenance(
+              await options.externalArtifacts.provenance(),
+            ),
+            retention: "external",
+          },
+          format: NATIVE_RELEASE_REGISTRY_FORMAT,
+          metadata,
+        };
       } else {
         const key = artifactKey(metadata);
         const storedArtifact = await options.store.head(key);
@@ -1204,6 +1321,8 @@ export const createNativeReleaseRegistry = (
           format: NATIVE_RELEASE_REGISTRY_FORMAT,
           metadata,
         };
+      }
+      if (!existing) {
         const serialized = encodedJson(record);
         await options.store.put(recordKey(metadata), serialized, {
           cacheControl: "public, max-age=31536000, immutable",

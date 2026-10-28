@@ -57,7 +57,9 @@ export {
 
 export type {
   AndroidNativeReleaseMetadata,
+  ExternalNativeReleaseRecord,
   IosNativeReleaseMetadata,
+  NativeReleaseArtifactProvenance,
   NativeReleaseBlobObject,
   NativeReleaseBlobStore,
   NativeReleaseCertification,
@@ -71,9 +73,11 @@ export type {
   NativeReleaseRecord,
   NativeReleaseRegistry,
   NativeReleaseRegistryOptions,
+  StoredNativeReleaseRecord,
 } from "./nativeRelease";
 export {
   createNativeReleaseRegistry,
+  githubActionsArtifactProvenance,
   NATIVE_RELEASE_REGISTRY_FORMAT,
   NativeReleaseRegistryError,
 } from "./nativeRelease";
