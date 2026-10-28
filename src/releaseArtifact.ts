@@ -194,7 +194,10 @@ const MAX_ENTRY_DETAIL = 300;
  * `./core/node_modules/...` in. An exact path is honoured, with everything
  * under it, by both BusyBox and GNU tar.
  */
-const archiveExclusions = async (archivePath: string, excludeNames: string[]) => {
+const archiveExclusions = async (
+  archivePath: string,
+  excludeNames: string[],
+) => {
   if (excludeNames.length === 0) return [];
   const globs = excludeNames.map((name) => new Bun.Glob(name));
   const roots = new Set<string>();

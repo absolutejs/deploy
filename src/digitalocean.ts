@@ -356,23 +356,52 @@ export const findDigitalOceanDroplet = async (
   return matches[0];
 };
 
-/** List droplets, optionally filtered by tag. Useful for cleanup tasks. */
+// DigitalOcean's largest page; its default is 20.
+const LIST_PAGE_SIZE = 200;
+// 100,000 rows. Past this the listing is refused rather than cut short.
+const LIST_MAX_PAGES = 500;
+
+/**
+ * Every row of a DigitalOcean list endpoint, following its pages. A list
+ * read as one page stops at 20 rows, and a caller that treats the list as
+ * the whole fleet then sees every droplet past the 20th as gone. So a
+ * listing is complete or it throws; it is never silently short.
+ */
+export const listAllDigitalOcean = async <T>(
+  client: DigitalOceanClientLike,
+  path: string,
+  field: string,
+): Promise<T[]> => {
+  const rows: T[] = [];
+  const separator = path.includes("?") ? "&" : "?";
+  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+    const body = await client.request<
+      { links?: { pages?: { next?: string } } } & Record<string, unknown>
+    >("GET", `${path}${separator}per_page=${LIST_PAGE_SIZE}&page=${page}`);
+    const items = body[field];
+    if (!Array.isArray(items))
+      throw new Error(`[deploy/digitalocean] ${path} returned no ${field}`);
+    rows.push(...(items as T[]));
+    if (!body.links?.pages?.next || items.length === 0) return rows;
+  }
+  throw new Error(
+    `[deploy/digitalocean] ${path} has more than ${LIST_MAX_PAGES} pages`,
+  );
+};
+
+/** List droplets, optionally filtered by tag: every page of them. */
 export const listDigitalOceanDroplets = async (options: {
   token?: string;
   client?: DigitalOceanClientLike;
   tag?: string;
-}): Promise<DigitalOceanDroplet[]> => {
-  const client = resolveClient(options);
-  const path =
+}): Promise<DigitalOceanDroplet[]> =>
+  listAllDigitalOcean<DigitalOceanDroplet>(
+    resolveClient(options),
     options.tag !== undefined
       ? `/droplets?tag_name=${encodeURIComponent(options.tag)}`
-      : "/droplets";
-  const body = await client.request<{ droplets: DigitalOceanDroplet[] }>(
-    "GET",
-    path,
+      : "/droplets",
+    "droplets",
   );
-  return body.droplets;
-};
 
 /** Destroy a droplet by id. No-op if already gone. */
 export const destroyDigitalOceanDroplet = async (options: {

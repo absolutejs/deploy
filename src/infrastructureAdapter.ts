@@ -37,8 +37,7 @@ export const leastPopulatedRegion = <Region extends { region: string }>(
     if (counts.has(region)) counts.set(region, (counts.get(region) ?? 0) + 1);
   }
   const selected = [...counts].sort(
-    (left, right) =>
-      left[1] - right[1] || left[0].localeCompare(right[0]),
+    (left, right) => left[1] - right[1] || left[0].localeCompare(right[0]),
   )[0]?.[0];
 
   return eligible.find((region) => region.region === selected);

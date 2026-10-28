@@ -363,7 +363,7 @@ describe("listDigitalOceanDroplets", () => {
     ]);
     const result = await listDigitalOceanDroplets({ client });
     expect(result).toHaveLength(2);
-    expect(calls[0]?.path).toBe("/droplets");
+    expect(calls[0]?.path).toBe("/droplets?per_page=200&page=1");
   });
 
   test("filters by tag when supplied", async () => {
@@ -375,7 +375,45 @@ describe("listDigitalOceanDroplets", () => {
       },
     ]);
     await listDigitalOceanDroplets({ client, tag: "prod" });
-    expect(calls[0]?.path).toBe("/droplets?tag_name=prod");
+    expect(calls[0]?.path).toBe("/droplets?tag_name=prod&per_page=200&page=1");
+  });
+
+  test("follows every page, so droplets past the first page are not lost", async () => {
+    // One page is 20 droplets by default; a fleet sync that read one page
+    // would have treated every droplet past the 20th as terminated.
+    const { client, calls } = makeClient([
+      {
+        method: "GET",
+        pathPrefix: "/droplets?tag_name=prod&per_page=200&page=1",
+        respond: () => ({
+          droplets: [droplet(), droplet({ id: 2 })],
+          links: { pages: { next: "page=2" } },
+        }),
+      },
+      {
+        method: "GET",
+        pathPrefix: "/droplets?tag_name=prod&per_page=200&page=2",
+        respond: () => ({ droplets: [droplet({ id: 3 })], links: {} }),
+      },
+    ]);
+    const result = await listDigitalOceanDroplets({ client, tag: "prod" });
+
+    expect(result.map((entry) => entry.id)).toEqual([1001, 2, 3]);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("a malformed page fails the listing instead of shortening it", async () => {
+    const { client } = makeClient([
+      {
+        method: "GET",
+        pathPrefix: "/droplets",
+        respond: () => ({ message: "unexpected" }),
+      },
+    ]);
+
+    await expect(listDigitalOceanDroplets({ client })).rejects.toThrow(
+      "returned no droplets",
+    );
   });
 });
 
@@ -498,17 +536,24 @@ const unavailable = () => {
   throw new DigitalOceanError(
     "DigitalOcean API POST /droplets failed: 422 Unprocessable Entity: Size is not available in this region.",
     422,
-    { id: "unprocessable_entity", message: "Size is not available in this region." },
+    {
+      id: "unprocessable_entity",
+      message: "Size is not available in this region.",
+    },
   );
 };
 
 describe("droplet size substitution", () => {
   test("picks the cheapest size there with at least the same vCPUs, memory and disk", () => {
-    expect(equivalentDigitalOceanSize(catalog, "s-2vcpu-4gb", "nyc3")?.slug).toBe(
-      "s-2vcpu-4gb-amd",
-    );
-    expect(equivalentDigitalOceanSize(catalog, "s-4vcpu-8gb", "sfo3")).toBeNull();
-    expect(equivalentDigitalOceanSize(catalog, "no-such-size", "nyc3")).toBeNull();
+    expect(
+      equivalentDigitalOceanSize(catalog, "s-2vcpu-4gb", "nyc3")?.slug,
+    ).toBe("s-2vcpu-4gb-amd");
+    expect(
+      equivalentDigitalOceanSize(catalog, "s-4vcpu-8gb", "sfo3"),
+    ).toBeNull();
+    expect(
+      equivalentDigitalOceanSize(catalog, "no-such-size", "nyc3"),
+    ).toBeNull();
   });
 
   test("retries once with the substitute and reports it", async () => {
@@ -569,7 +614,11 @@ describe("droplet size substitution", () => {
       },
     ]);
     await expect(
-      createDigitalOceanDroplet(client, { name: "n", region: "nyc3", size: "s-2vcpu-4gb" }),
+      createDigitalOceanDroplet(client, {
+        name: "n",
+        region: "nyc3",
+        size: "s-2vcpu-4gb",
+      }),
     ).rejects.toThrow(/droplet limit/);
     expect(calls).toHaveLength(1);
   });

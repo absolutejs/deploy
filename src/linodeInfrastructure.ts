@@ -39,7 +39,9 @@ const isPrivate = (ip: string) =>
   ip.startsWith("172.") ||
   ip.startsWith("169.254.");
 
-const stateFor = (status: LinodeInstance["status"]): InfrastructureNodeState => {
+const stateFor = (
+  status: LinodeInstance["status"],
+): InfrastructureNodeState => {
   if (status === "running") return "ready";
   if (
     [
@@ -77,7 +79,8 @@ export const createLinodeInfrastructureProvider = (
   if (options.regions.length === 0)
     throw new Error("[deploy/linode] at least one fleet region is required");
   const client =
-    options.client ?? (options.token ? createLinodeClient(options.token) : undefined);
+    options.client ??
+    (options.token ? createLinodeClient(options.token) : undefined);
   if (!client)
     throw new Error(
       "[deploy/linode] either `token` or `client` must be provided",
@@ -148,8 +151,12 @@ export const createLinodeInfrastructureProvider = (
           root_pass: rootPassword(),
           tags: [tag],
           type: region.type,
-          ...(input.userData ?? region.userData
-            ? { stackscript_data: { user_data: input.userData ?? region.userData } }
+          ...((input.userData ?? region.userData)
+            ? {
+                stackscript_data: {
+                  user_data: input.userData ?? region.userData,
+                },
+              }
             : {}),
         },
       );

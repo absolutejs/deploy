@@ -168,7 +168,8 @@ describe("infrastructure provider contract", () => {
     const request = createGcpIdentityTokenRequest({
       auth: {
         getIdTokenClient: async (audience: string) => ({
-          getRequestHeaders: async () => new Headers({ authorization: `Bearer ${audience}` }),
+          getRequestHeaders: async () =>
+            new Headers({ authorization: `Bearer ${audience}` }),
         }),
       },
       fetch: (async (url: string, init?: RequestInit) => {
@@ -177,8 +178,12 @@ describe("infrastructure provider contract", () => {
         return Response.json({ ok: true });
       }) as typeof fetch,
     });
-    await request("node-agent", "https://node.internal/health", { method: "GET" });
-    expect(calls[0]?.init?.headers).toMatchObject({ authorization: "Bearer node-agent" });
+    await request("node-agent", "https://node.internal/health", {
+      method: "GET",
+    });
+    expect(calls[0]?.init?.headers).toMatchObject({
+      authorization: "Bearer node-agent",
+    });
   });
 
   test("normalizes and provisions Hetzner fleet nodes", async () => {
@@ -187,7 +192,10 @@ describe("infrastructure provider contract", () => {
       id: 41,
       name: "existing",
       private_net: [{ ip: "10.0.0.4", network: 1 }],
-      public_net: { ipv4: { blocked: false, id: 1, ip: "203.0.113.4" }, ipv6: null },
+      public_net: {
+        ipv4: { blocked: false, id: 1, ip: "203.0.113.4" },
+        ipv6: null,
+      },
       status: "running",
     };
     const calls: Array<{ body?: unknown; method: string; path: string }> = [];
@@ -201,7 +209,13 @@ describe("infrastructure provider contract", () => {
         if (path.includes("?name=")) return { servers: [] } as T;
         if (method === "POST")
           return {
-            server: { ...existing, datacenter: { location: { name: "ash" } }, id: 42, name: "new", status: "initializing" },
+            server: {
+              ...existing,
+              datacenter: { location: { name: "ash" } },
+              id: 42,
+              name: "new",
+              status: "initializing",
+            },
           } as T;
         return { servers: [existing] } as T;
       },
@@ -210,13 +224,31 @@ describe("infrastructure provider contract", () => {
       agent: { preferPrivateNetwork: true },
       client,
       regions: [
-        { image: "ubuntu-24.04", region: "nbg1", serverType: "cx22", sshKeys: [1] },
-        { image: "ubuntu-24.04", region: "ash", serverType: "cx22", sshKeys: [1] },
+        {
+          image: "ubuntu-24.04",
+          region: "nbg1",
+          serverType: "cx22",
+          sshKeys: [1],
+        },
+        {
+          image: "ubuntu-24.04",
+          region: "ash",
+          serverType: "cx22",
+          sshKeys: [1],
+        },
       ],
     });
-    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.4:8081/" }, id: "hetzner:41" });
-    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "hetzner:42", region: "ash", state: "pending" });
-    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ location: "ash", labels: { "absolutejs-role": "absolutejs-paas-node" } });
+    expect((await provider.listNodes())[0]).toMatchObject({
+      agent: { url: "http://10.0.0.4:8081/" },
+      id: "hetzner:41",
+    });
+    expect(
+      await provider.provisionNode({ idempotencyKey: "request", name: "new" }),
+    ).toMatchObject({ id: "hetzner:42", region: "ash", state: "pending" });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      location: "ash",
+      labels: { "absolutejs-role": "absolutejs-paas-node" },
+    });
   });
 
   test("normalizes and provisions Linode fleet nodes", async () => {
@@ -237,7 +269,13 @@ describe("infrastructure provider contract", () => {
       ): Promise<T> => {
         calls.push({ body, method, path });
         if (method === "POST")
-          return { ...existing, id: 52, label: "new", region: "us-west", status: "provisioning" } as T;
+          return {
+            ...existing,
+            id: 52,
+            label: "new",
+            region: "us-west",
+            status: "provisioning",
+          } as T;
         return { data: path.includes("tag=") ? [existing] : [] } as T;
       },
     };
@@ -245,13 +283,31 @@ describe("infrastructure provider contract", () => {
       agent: { preferPrivateNetwork: true },
       client,
       regions: [
-        { image: "linode/ubuntu24.04", region: "us-east", sshKeys: ["key"], type: "g6-nanode-1" },
-        { image: "linode/ubuntu24.04", region: "us-west", sshKeys: ["key"], type: "g6-nanode-1" },
+        {
+          image: "linode/ubuntu24.04",
+          region: "us-east",
+          sshKeys: ["key"],
+          type: "g6-nanode-1",
+        },
+        {
+          image: "linode/ubuntu24.04",
+          region: "us-west",
+          sshKeys: ["key"],
+          type: "g6-nanode-1",
+        },
       ],
     });
-    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.5:8081/" }, id: "linode:51" });
-    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "linode:52", region: "us-west", state: "pending" });
-    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ private_ip: true, region: "us-west" });
+    expect((await provider.listNodes())[0]).toMatchObject({
+      agent: { url: "http://10.0.0.5:8081/" },
+      id: "linode:51",
+    });
+    expect(
+      await provider.provisionNode({ idempotencyKey: "request", name: "new" }),
+    ).toMatchObject({ id: "linode:52", region: "us-west", state: "pending" });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      private_ip: true,
+      region: "us-west",
+    });
   });
 
   test("normalizes and provisions Vultr fleet nodes", async () => {
@@ -276,7 +332,13 @@ describe("infrastructure provider contract", () => {
         if (path.includes("label=")) return { instances: [] } as T;
         if (method === "POST")
           return {
-            instance: { ...existing, id: "22222222-2222-4222-8222-222222222222", label: "new", region: "lax", status: "pending" },
+            instance: {
+              ...existing,
+              id: "22222222-2222-4222-8222-222222222222",
+              label: "new",
+              region: "lax",
+              status: "pending",
+            },
           } as T;
         return { instances: [existing] } as T;
       },
@@ -289,8 +351,20 @@ describe("infrastructure provider contract", () => {
         { osId: 2284, plan: "vc2-1c-1gb", region: "lax", sshKeys: ["key"] },
       ],
     });
-    expect((await provider.listNodes())[0]).toMatchObject({ agent: { url: "http://10.0.0.6:8081/" }, id: "vultr:11111111-1111-4111-8111-111111111111" });
-    expect(await provider.provisionNode({ idempotencyKey: "request", name: "new" })).toMatchObject({ id: "vultr:22222222-2222-4222-8222-222222222222", region: "lax", state: "pending" });
-    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({ region: "lax", tags: ["absolutejs-paas-node"] });
+    expect((await provider.listNodes())[0]).toMatchObject({
+      agent: { url: "http://10.0.0.6:8081/" },
+      id: "vultr:11111111-1111-4111-8111-111111111111",
+    });
+    expect(
+      await provider.provisionNode({ idempotencyKey: "request", name: "new" }),
+    ).toMatchObject({
+      id: "vultr:22222222-2222-4222-8222-222222222222",
+      region: "lax",
+      state: "pending",
+    });
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      region: "lax",
+      tags: ["absolutejs-paas-node"],
+    });
   });
 });

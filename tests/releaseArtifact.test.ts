@@ -194,9 +194,9 @@ describe("release artifacts", () => {
       destination,
       excludeNames: ["node_modules"],
     });
-    expect(await Bun.file(path.join(destination, "web/index.ts")).exists()).toBe(
-      true,
-    );
+    expect(
+      await Bun.file(path.join(destination, "web/index.ts")).exists(),
+    ).toBe(true);
     await expect(
       readFile(path.join(destination, "web/node_modules/.bin/cross-env")),
     ).rejects.toThrow();

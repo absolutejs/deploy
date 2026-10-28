@@ -42,11 +42,18 @@ const fakeClient = (pages: Record<string, unknown[]>) => {
           },
           invoices:
             page === 1
-              ? [{ amount: "100.00", invoice_period: "2026-09", invoice_uuid: UUID }]
+              ? [
+                  {
+                    amount: "100.00",
+                    invoice_period: "2026-09",
+                    invoice_uuid: UUID,
+                  },
+                ]
               : [],
-          links: page === 1 && url.searchParams.get("per_page") !== "1"
-            ? { pages: { next: "more" } }
-            : {},
+          links:
+            page === 1 && url.searchParams.get("per_page") !== "1"
+              ? { pages: { next: "more" } }
+              : {},
         } as T;
       const rows = pages[url.pathname] ?? [];
       const perPage = Number(url.searchParams.get("per_page"));
@@ -79,8 +86,20 @@ describe("DigitalOcean billing", () => {
     const { client } = fakeClient({});
     const invoices = await createDigitalOceanBilling({ client }).listInvoices();
     expect(invoices).toEqual([
-      { amountMicros: 100_000_000, currency: "USD", id: UUID, period: "2026-09", preview: false },
-      { amountMicros: 42_100_000, currency: "USD", id: "preview", period: "2026-10", preview: true },
+      {
+        amountMicros: 100_000_000,
+        currency: "USD",
+        id: UUID,
+        period: "2026-09",
+        preview: false,
+      },
+      {
+        amountMicros: 42_100_000,
+        currency: "USD",
+        id: "preview",
+        period: "2026-10",
+        preview: true,
+      },
     ]);
   });
 
@@ -89,7 +108,9 @@ describe("DigitalOcean billing", () => {
       item({ resource_id: String(1000 + index) }),
     );
     const { client } = fakeClient({ [`/customers/my/invoices/${UUID}`]: rows });
-    const lines = await createDigitalOceanBilling({ client }).listInvoiceLines(UUID);
+    const lines = await createDigitalOceanBilling({ client }).listInvoiceLines(
+      UUID,
+    );
     expect(lines).toHaveLength(250);
     expect(lines[0]).toMatchObject({
       amountMicros: 31_500_000,
@@ -107,7 +128,9 @@ describe("DigitalOcean billing", () => {
     const { client } = fakeClient({
       "/customers/my/invoices/preview": [duplicate, duplicate],
     });
-    const lines = await createDigitalOceanBilling({ client }).listInvoiceLines("preview");
+    const lines = await createDigitalOceanBilling({ client }).listInvoiceLines(
+      "preview",
+    );
     const management = createHash("sha256")
       .update(
         JSON.stringify([
@@ -160,7 +183,9 @@ describe("DigitalOcean node sizes", () => {
     };
     const provider = createDigitalOceanInfrastructureProvider({
       client,
-      regions: [{ image: "x", region: "nyc3", size: "s-2vcpu-4gb", sshKeys: [] }],
+      regions: [
+        { image: "x", region: "nyc3", size: "s-2vcpu-4gb", sshKeys: [] },
+      ],
       tag: "fleet",
     });
     const node = await provider.getNode("digitalocean:611756175");
