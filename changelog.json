@@ -5,6 +5,16 @@
 		{
 			"changes": [
 				{
+					"kind": "fixed",
+					"summary": "`listDigitalOceanDroplets` follows every page of the droplet list. It read one page, which DigitalOcean caps at 20 droplets by default, so a fleet sync over a pool of more than 20 saw every droplet past the 20th as gone. A malformed page now fails the listing instead of shortening it. `listAllDigitalOcean` is the shared helper"
+				}
+			],
+			"date": "2026-10-28",
+			"version": "0.33.1"
+		},
+		{
+			"changes": [
+				{
 					"kind": "added",
 					"summary": "A native release registry can record releases by digest and provenance without storing their bytes: `externalArtifacts.provenance` names the GitHub Actions run that built the artifact, publication still checks the local artifact's size and SHA-256, and reading, promoting and resolving no longer require stored bytes for such a release. `githubActionsArtifactProvenance` reads that provenance from the runner's environment. Releases already stored with their bytes keep their byte check",
 					"symbols": [
