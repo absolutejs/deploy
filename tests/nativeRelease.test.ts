@@ -252,11 +252,7 @@ describe("native release registry", () => {
     } as const;
     let verifications = 0;
     const registry = createNativeReleaseRegistry({
-      certificationVerifier: async ({
-        metadata,
-        requirement,
-        verification,
-      }) => {
+      certificationVerifier: async ({ metadata, requirement, verification }) => {
         verifications += 1;
         expect(requirement).toBe("installed");
         expect(verification).toEqual(certificationVerification);

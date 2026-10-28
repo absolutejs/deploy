@@ -146,10 +146,7 @@ export const createDigitalOceanBilling = ({
         fingerprint: `${hash}:${occurrence}`,
         invoiceId,
         period:
-          period ??
-          item.start_time?.slice(0, 7) ??
-          item.end_time?.slice(0, 7) ??
-          "",
+          period ?? item.start_time?.slice(0, 7) ?? item.end_time?.slice(0, 7) ?? "",
         product: item.product,
         projectName: text(item.project_name),
         resourceId: text(item.resource_id),

@@ -37,7 +37,9 @@ export type HetznerInfrastructureProviderOptions = {
 
 const stateFor = (status: HetznerServer["status"]): InfrastructureNodeState => {
   if (status === "running") return "ready";
-  if (["initializing", "starting", "migrating", "rebuilding"].includes(status))
+  if (
+    ["initializing", "starting", "migrating", "rebuilding"].includes(status)
+  )
     return "pending";
 
   return "terminated";
@@ -135,7 +137,7 @@ export const createHetznerInfrastructureProvider = (
           ssh_keys: [...region.sshKeys],
           start_after_create: true,
           ...(region.networkId ? { networks: [region.networkId] } : {}),
-          ...((input.userData ?? region.userData)
+          ...(input.userData ?? region.userData
             ? { user_data: input.userData ?? region.userData }
             : {}),
         },

@@ -63,8 +63,7 @@ export const createVultrInfrastructureProvider = (
   if (options.regions.length === 0)
     throw new Error("[deploy/vultr] at least one fleet region is required");
   const client =
-    options.client ??
-    (options.token ? createVultrClient(options.token) : undefined);
+    options.client ?? (options.token ? createVultrClient(options.token) : undefined);
   if (!client)
     throw new Error(
       "[deploy/vultr] either `token` or `client` must be provided",
@@ -138,7 +137,7 @@ export const createVultrInfrastructureProvider = (
           region: region.region,
           sshkey_id: [...region.sshKeys],
           tags: [tag],
-          ...((input.userData ?? region.userData)
+          ...(input.userData ?? region.userData
             ? { user_data: btoa(input.userData ?? region.userData ?? "") }
             : {}),
         },

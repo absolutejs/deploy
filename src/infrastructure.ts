@@ -105,14 +105,12 @@ const MICRO_DIGITS = 6;
 /** A decimal currency amount ("12.34", -0.5, "0.0012") as integer micros,
  *  parsed from its digits so no float rounding enters a bill. */
 export const amountToMicros = (value: string | number) => {
-  const text =
-    typeof value === "number" ? value.toFixed(MICRO_DIGITS) : value.trim();
+  const text = typeof value === "number" ? value.toFixed(MICRO_DIGITS) : value.trim();
   const match = DECIMAL_AMOUNT.exec(text);
   if (!match) throw new Error(`[deploy] invalid currency amount: ${value}`);
   const [, sign, whole = "0", fraction = ""] = match;
   const digits = fraction.padEnd(MICRO_DIGITS + 1, "0");
-  let micros =
-    Number(whole) * MICROS_PER_UNIT + Number(digits.slice(0, MICRO_DIGITS));
+  let micros = Number(whole) * MICROS_PER_UNIT + Number(digits.slice(0, MICRO_DIGITS));
   // Half away from zero on the seventh digit.
   if (Number(digits[MICRO_DIGITS]) >= 5) micros += 1;
   if (!Number.isSafeInteger(micros))

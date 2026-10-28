@@ -15,12 +15,12 @@
  */
 
 import type {
-  DnsProvider,
-  DnsRecord,
-  DnsRecordFilter,
-  DnsRecordSpec,
-  DnsRecordType,
-} from "./dns";
+	DnsProvider,
+	DnsRecord,
+	DnsRecordFilter,
+	DnsRecordSpec,
+	DnsRecordType
+} from './dns';
 
 // =============================================================================
 // AWS API shapes — narrowed to what we use
@@ -29,44 +29,44 @@ import type {
 export type Route53ResourceRecord = { Value: string };
 
 export type Route53ResourceRecordSet = {
-  Name: string;
-  Type: string;
-  TTL?: number;
-  ResourceRecords?: Route53ResourceRecord[];
-  AliasTarget?: {
-    HostedZoneId: string;
-    DNSName: string;
-    EvaluateTargetHealth: boolean;
-  };
-  SetIdentifier?: string;
+	Name: string;
+	Type: string;
+	TTL?: number;
+	ResourceRecords?: Route53ResourceRecord[];
+	AliasTarget?: {
+		HostedZoneId: string;
+		DNSName: string;
+		EvaluateTargetHealth: boolean;
+	};
+	SetIdentifier?: string;
 };
 
 export type Route53Change = {
-  Action: "CREATE" | "DELETE" | "UPSERT";
-  ResourceRecordSet: Route53ResourceRecordSet;
+	Action: 'CREATE' | 'DELETE' | 'UPSERT';
+	ResourceRecordSet: Route53ResourceRecordSet;
 };
 
 export type Route53ListInput = {
-  HostedZoneId: string;
-  StartRecordName?: string;
-  StartRecordType?: string;
-  MaxItems?: string;
+	HostedZoneId: string;
+	StartRecordName?: string;
+	StartRecordType?: string;
+	MaxItems?: string;
 };
 
 export type Route53ListOutput = {
-  ResourceRecordSets: Route53ResourceRecordSet[];
-  IsTruncated?: boolean;
-  NextRecordName?: string;
-  NextRecordType?: string;
+	ResourceRecordSets: Route53ResourceRecordSet[];
+	IsTruncated?: boolean;
+	NextRecordName?: string;
+	NextRecordType?: string;
 };
 
 export type Route53ChangeInput = {
-  HostedZoneId: string;
-  ChangeBatch: { Changes: Route53Change[]; Comment?: string };
+	HostedZoneId: string;
+	ChangeBatch: { Changes: Route53Change[]; Comment?: string };
 };
 
 export type Route53ChangeOutput = {
-  ChangeInfo: { Id: string; Status: string };
+	ChangeInfo: { Id: string; Status: string };
 };
 
 /**
@@ -92,22 +92,22 @@ export type Route53ChangeOutput = {
  * Or hand-roll a SigV4-signed fetch client if you want zero deps.
  */
 export type Route53ClientLike = {
-  listResourceRecordSets: (
-    input: Route53ListInput,
-  ) => Promise<Route53ListOutput>;
-  changeResourceRecordSets: (
-    input: Route53ChangeInput,
-  ) => Promise<Route53ChangeOutput>;
+	listResourceRecordSets: (
+		input: Route53ListInput
+	) => Promise<Route53ListOutput>;
+	changeResourceRecordSets: (
+		input: Route53ChangeInput
+	) => Promise<Route53ChangeOutput>;
 };
 
 export type Route53ProviderOptions = {
-  client: Route53ClientLike;
-  /** Hosted zone id, e.g. `'Z2FDTNDATAQYW2'`. */
-  hostedZoneId: string;
-  /** Zone name for log + name conversion, e.g. `'example.com'`. */
-  zoneName: string;
-  /** Default TTL when `spec.ttl` is omitted. Default 300. */
-  defaultTtl?: number;
+	client: Route53ClientLike;
+	/** Hosted zone id, e.g. `'Z2FDTNDATAQYW2'`. */
+	hostedZoneId: string;
+	/** Zone name for log + name conversion, e.g. `'example.com'`. */
+	zoneName: string;
+	/** Default TTL when `spec.ttl` is omitted. Default 300. */
+	defaultTtl?: number;
 };
 
 // =============================================================================
@@ -115,17 +115,16 @@ export type Route53ProviderOptions = {
 // =============================================================================
 
 const ensureFqdn = (name: string, zoneName: string): string => {
-  if (name === "@") return ensureTrailingDot(zoneName);
-  if (name === zoneName) return ensureTrailingDot(name);
-  if (name.endsWith(".")) return name;
-  return `${name}.`;
+	if (name === '@') return ensureTrailingDot(zoneName);
+	if (name === zoneName) return ensureTrailingDot(name);
+	if (name.endsWith('.')) return name;
+	return `${name}.`;
 };
 
-const ensureTrailingDot = (s: string): string =>
-  s.endsWith(".") ? s : `${s}.`;
+const ensureTrailingDot = (s: string): string => (s.endsWith('.') ? s : `${s}.`);
 
 const stripTrailingDot = (s: string): string =>
-  s.endsWith(".") ? s.slice(0, -1) : s;
+	s.endsWith('.') ? s.slice(0, -1) : s;
 
 /**
  * Route 53 TXT values MUST be enclosed in double quotes in the wire
@@ -133,20 +132,22 @@ const stripTrailingDot = (s: string): string =>
  * Bare unquoted input → wrap. Already-quoted input → pass through.
  */
 const encodeTxtValue = (raw: string): string => {
-  if (raw.startsWith('"') && raw.endsWith('"')) return raw;
-  const CHUNK = 255;
-  const chunks: string[] = [];
-  for (let i = 0; i < raw.length; i += CHUNK) {
-    chunks.push(`"${raw.slice(i, i + CHUNK).replaceAll('"', '\\"')}"`);
-  }
-  return chunks.join(" ");
+	if (raw.startsWith('"') && raw.endsWith('"')) return raw;
+	const CHUNK = 255;
+	const chunks: string[] = [];
+	for (let i = 0; i < raw.length; i += CHUNK) {
+		chunks.push(`"${raw.slice(i, i + CHUNK).replaceAll('"', '\\"')}"`);
+	}
+	return chunks.join(' ');
 };
 
 /** Inverse of encodeTxtValue: unwrap " ... " " ... " back to raw. */
 const decodeTxtValue = (wire: string): string => {
-  const parts = wire.match(/"((?:\\.|[^"])*)"/g);
-  if (parts === null) return wire;
-  return parts.map((part) => part.slice(1, -1).replaceAll('\\"', '"')).join("");
+	const parts = wire.match(/"((?:\\.|[^"])*)"/g);
+	if (parts === null) return wire;
+	return parts
+		.map((part) => part.slice(1, -1).replaceAll('\\"', '"'))
+		.join('');
 };
 
 // =============================================================================
@@ -160,24 +161,24 @@ const decodeTxtValue = (wire: string): string => {
  * expects `delete(id)`) works without a second API round-trip.
  */
 type Route53IdPayload = {
-  n: string; // Name (FQDN with trailing dot)
-  t: string; // Type
-  v: string[]; // Values (as written to ResourceRecords[])
-  l?: number; // TTL
+	n: string; // Name (FQDN with trailing dot)
+	t: string; // Type
+	v: string[]; // Values (as written to ResourceRecords[])
+	l?: number; // TTL
 };
 
 const encodeId = (payload: Route53IdPayload): string =>
-  btoa(JSON.stringify(payload))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
+	btoa(JSON.stringify(payload))
+		.replaceAll('+', '-')
+		.replaceAll('/', '_')
+		.replaceAll('=', '');
 
 const decodeId = (id: string): Route53IdPayload => {
-  const padded = id
-    .replaceAll("-", "+")
-    .replaceAll("_", "/")
-    .padEnd(Math.ceil(id.length / 4) * 4, "=");
-  return JSON.parse(atob(padded)) as Route53IdPayload;
+	const padded = id
+		.replaceAll('-', '+')
+		.replaceAll('_', '/')
+		.padEnd(Math.ceil(id.length / 4) * 4, '=');
+	return JSON.parse(atob(padded)) as Route53IdPayload;
 };
 
 // =============================================================================
@@ -185,49 +186,46 @@ const decodeId = (id: string): Route53IdPayload => {
 // =============================================================================
 
 const toDnsRecord = (
-  set: Route53ResourceRecordSet,
-  zoneName: string,
+	set: Route53ResourceRecordSet,
+	zoneName: string
 ): DnsRecord | undefined => {
-  // Alias records (no ResourceRecords) don't fit our string-content model.
-  const values = set.ResourceRecords?.map((r) => r.Value) ?? [];
-  if (values.length === 0) return undefined;
-  // For TXT, decode the wire format back to raw plaintext.
-  const content =
-    set.Type === "TXT"
-      ? decodeTxtValue(values.join(" "))
-      : (values[0] as string);
-  const idPayload: Route53IdPayload = {
-    n: set.Name,
-    t: set.Type,
-    v: values,
-    ...(set.TTL !== undefined ? { l: set.TTL } : {}),
-  };
-  const fqdn = stripTrailingDot(set.Name);
-  const name = fqdn === zoneName ? zoneName : fqdn;
-  return {
-    content,
-    id: encodeId(idPayload),
-    name,
-    type: set.Type as DnsRecordType,
-    ...(set.TTL !== undefined ? { ttl: set.TTL } : {}),
-  };
+	// Alias records (no ResourceRecords) don't fit our string-content model.
+	const values = set.ResourceRecords?.map((r) => r.Value) ?? [];
+	if (values.length === 0) return undefined;
+	// For TXT, decode the wire format back to raw plaintext.
+	const content =
+		set.Type === 'TXT' ? decodeTxtValue(values.join(' ')) : (values[0] as string);
+	const idPayload: Route53IdPayload = {
+		n: set.Name,
+		t: set.Type,
+		v: values,
+		...(set.TTL !== undefined ? { l: set.TTL } : {})
+	};
+	const fqdn = stripTrailingDot(set.Name);
+	const name = fqdn === zoneName ? zoneName : fqdn;
+	return {
+		content,
+		id: encodeId(idPayload),
+		name,
+		type: set.Type as DnsRecordType,
+		...(set.TTL !== undefined ? { ttl: set.TTL } : {})
+	};
 };
 
 const buildRecordSet = (
-  spec: DnsRecordSpec,
-  zoneName: string,
-  defaultTtl: number,
+	spec: DnsRecordSpec,
+	zoneName: string,
+	defaultTtl: number
 ): Route53ResourceRecordSet => {
-  const Name = ensureFqdn(spec.name, zoneName);
-  const ttl = spec.ttl ?? defaultTtl;
-  const value =
-    spec.type === "TXT" ? encodeTxtValue(spec.content) : spec.content;
-  return {
-    Name,
-    ResourceRecords: [{ Value: value }],
-    TTL: ttl,
-    Type: spec.type,
-  };
+	const Name = ensureFqdn(spec.name, zoneName);
+	const ttl = spec.ttl ?? defaultTtl;
+	const value = spec.type === 'TXT' ? encodeTxtValue(spec.content) : spec.content;
+	return {
+		Name,
+		ResourceRecords: [{ Value: value }],
+		TTL: ttl,
+		Type: spec.type
+	};
 };
 
 // =============================================================================
@@ -235,128 +233,141 @@ const buildRecordSet = (
 // =============================================================================
 
 export const route53DnsProvider = (
-  options: Route53ProviderOptions,
+	options: Route53ProviderOptions
 ): DnsProvider => {
-  const { client, hostedZoneId, zoneName } = options;
-  const defaultTtl = options.defaultTtl ?? 300;
-  const zoneLabel = zoneName;
+	const { client, hostedZoneId, zoneName } = options;
+	const defaultTtl = options.defaultTtl ?? 300;
+	const zoneLabel = zoneName;
 
-  const fetchAll = async (filter?: DnsRecordFilter): Promise<DnsRecord[]> => {
-    const out: DnsRecord[] = [];
-    let startName: string | undefined;
-    let startType: string | undefined;
-    for (;;) {
-      const params: Route53ListInput = {
-        HostedZoneId: hostedZoneId,
-        MaxItems: "500",
-        ...(startName !== undefined ? { StartRecordName: startName } : {}),
-        ...(startType !== undefined ? { StartRecordType: startType } : {}),
-      };
-      const page = await client.listResourceRecordSets(params);
-      for (const set of page.ResourceRecordSets) {
-        const dnsRecord = toDnsRecord(set, zoneName);
-        if (dnsRecord === undefined) continue;
-        if (filter?.name !== undefined && dnsRecord.name !== filter.name) {
-          continue;
-        }
-        if (filter?.type !== undefined && dnsRecord.type !== filter.type) {
-          continue;
-        }
-        out.push(dnsRecord);
-      }
-      if (page.IsTruncated !== true) break;
-      startName = page.NextRecordName;
-      startType = page.NextRecordType;
-    }
-    return out;
-  };
+	const fetchAll = async (
+		filter?: DnsRecordFilter
+	): Promise<DnsRecord[]> => {
+		const out: DnsRecord[] = [];
+		let startName: string | undefined;
+		let startType: string | undefined;
+		for (;;) {
+			const params: Route53ListInput = {
+				HostedZoneId: hostedZoneId,
+				MaxItems: '500',
+				...(startName !== undefined ? { StartRecordName: startName } : {}),
+				...(startType !== undefined ? { StartRecordType: startType } : {})
+			};
+			const page = await client.listResourceRecordSets(params);
+			for (const set of page.ResourceRecordSets) {
+				const dnsRecord = toDnsRecord(set, zoneName);
+				if (dnsRecord === undefined) continue;
+				if (
+					filter?.name !== undefined &&
+					dnsRecord.name !== filter.name
+				) {
+					continue;
+				}
+				if (
+					filter?.type !== undefined &&
+					dnsRecord.type !== filter.type
+				) {
+					continue;
+				}
+				out.push(dnsRecord);
+			}
+			if (page.IsTruncated !== true) break;
+			startName = page.NextRecordName;
+			startType = page.NextRecordType;
+		}
+		return out;
+	};
 
-  const list = (filter?: DnsRecordFilter): Promise<DnsRecord[]> =>
-    fetchAll(filter);
+	const list = (filter?: DnsRecordFilter): Promise<DnsRecord[]> =>
+		fetchAll(filter);
 
-  const find = async (key: {
-    name: string;
-    type: DnsRecordType;
-  }): Promise<DnsRecord | undefined> => {
-    const matches = await fetchAll(key);
-    if (matches.length === 0) return undefined;
-    if (matches.length > 1) {
-      throw new Error(
-        `[deploy/route53] multiple ${key.type} records for "${key.name}" in zone ${zoneLabel} — drifted state; resolve manually before upsert.`,
-      );
-    }
-    return matches[0];
-  };
+	const find = async (key: {
+		name: string;
+		type: DnsRecordType;
+	}): Promise<DnsRecord | undefined> => {
+		const matches = await fetchAll(key);
+		if (matches.length === 0) return undefined;
+		if (matches.length > 1) {
+			throw new Error(
+				`[deploy/route53] multiple ${key.type} records for "${key.name}" in zone ${zoneLabel} — drifted state; resolve manually before upsert.`
+			);
+		}
+		return matches[0];
+	};
 
-  const submitChange = async (change: Route53Change): Promise<void> => {
-    await client.changeResourceRecordSets({
-      ChangeBatch: { Changes: [change] },
-      HostedZoneId: hostedZoneId,
-    });
-  };
+	const submitChange = async (change: Route53Change): Promise<void> => {
+		await client.changeResourceRecordSets({
+			ChangeBatch: { Changes: [change] },
+			HostedZoneId: hostedZoneId
+		});
+	};
 
-  const create = async (spec: DnsRecordSpec): Promise<DnsRecord> => {
-    const set = buildRecordSet(spec, zoneName, defaultTtl);
-    await submitChange({ Action: "CREATE", ResourceRecordSet: set });
-    const synthesized = toDnsRecord(set, zoneName);
-    if (synthesized === undefined) {
-      throw new Error(
-        "[deploy/route53] internal: built record had no ResourceRecords",
-      );
-    }
-    return synthesized;
-  };
+	const create = async (spec: DnsRecordSpec): Promise<DnsRecord> => {
+		const set = buildRecordSet(spec, zoneName, defaultTtl);
+		await submitChange({ Action: 'CREATE', ResourceRecordSet: set });
+		const synthesized = toDnsRecord(set, zoneName);
+		if (synthesized === undefined) {
+			throw new Error(
+				'[deploy/route53] internal: built record had no ResourceRecords'
+			);
+		}
+		return synthesized;
+	};
 
-  const upsert = async (spec: DnsRecordSpec): Promise<DnsRecord> => {
-    const set = buildRecordSet(spec, zoneName, defaultTtl);
-    await submitChange({ Action: "UPSERT", ResourceRecordSet: set });
-    const synthesized = toDnsRecord(set, zoneName);
-    if (synthesized === undefined) {
-      throw new Error(
-        "[deploy/route53] internal: built record had no ResourceRecords",
-      );
-    }
-    return synthesized;
-  };
+	const upsert = async (spec: DnsRecordSpec): Promise<DnsRecord> => {
+		const set = buildRecordSet(spec, zoneName, defaultTtl);
+		await submitChange({ Action: 'UPSERT', ResourceRecordSet: set });
+		const synthesized = toDnsRecord(set, zoneName);
+		if (synthesized === undefined) {
+			throw new Error(
+				'[deploy/route53] internal: built record had no ResourceRecords'
+			);
+		}
+		return synthesized;
+	};
 
-  const update = async (_id: string, spec: DnsRecordSpec): Promise<DnsRecord> =>
-    upsert(spec);
+	const update = async (
+		_id: string,
+		spec: DnsRecordSpec
+	): Promise<DnsRecord> => upsert(spec);
 
-  const deleteRecord = async (id: string): Promise<void> => {
-    // Route 53's DELETE requires the exact current state. We reconstruct
-    // it from the synthetic id we issued at read/write time.
-    const payload = decodeId(id);
-    const set: Route53ResourceRecordSet = {
-      Name: payload.n,
-      ResourceRecords: payload.v.map((Value) => ({ Value })),
-      Type: payload.t,
-      ...(payload.l !== undefined ? { TTL: payload.l } : {}),
-    };
-    try {
-      await submitChange({ Action: "DELETE", ResourceRecordSet: set });
-    } catch (error) {
-      // Route 53 throws InvalidChangeBatch when the record doesn't exist
-      // (or its state has drifted from what we encoded). Treat the
-      // "doesn't exist" subset as idempotent success.
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes("not found") ||
-        message.includes("NoSuchHostedZone") ||
-        message.includes("but it was not found")
-      ) {
-        return;
-      }
-      throw error;
-    }
-  };
+	const deleteRecord = async (id: string): Promise<void> => {
+		// Route 53's DELETE requires the exact current state. We reconstruct
+		// it from the synthetic id we issued at read/write time.
+		const payload = decodeId(id);
+		const set: Route53ResourceRecordSet = {
+			Name: payload.n,
+			ResourceRecords: payload.v.map((Value) => ({ Value })),
+			Type: payload.t,
+			...(payload.l !== undefined ? { TTL: payload.l } : {})
+		};
+		try {
+			await submitChange({ Action: 'DELETE', ResourceRecordSet: set });
+		} catch (error) {
+			// Route 53 throws InvalidChangeBatch when the record doesn't exist
+			// (or its state has drifted from what we encoded). Treat the
+			// "doesn't exist" subset as idempotent success.
+			const message =
+				error instanceof Error ? error.message : String(error);
+			if (
+				message.includes('not found') ||
+				message.includes('NoSuchHostedZone') ||
+				message.includes(
+					'but it was not found'
+				)
+			) {
+				return;
+			}
+			throw error;
+		}
+	};
 
-  return {
-    create,
-    delete: deleteRecord,
-    description: `route53 zone "${zoneLabel}"`,
-    find,
-    list,
-    update,
-    upsert,
-  };
+	return {
+		create,
+		delete: deleteRecord,
+		description: `route53 zone "${zoneLabel}"`,
+		find,
+		list,
+		update,
+		upsert
+	};
 };
