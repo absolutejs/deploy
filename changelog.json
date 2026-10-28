@@ -6,6 +6,34 @@
 			"changes": [
 				{
 					"kind": "added",
+					"summary": "A native release registry can record releases by digest and provenance without storing their bytes: `externalArtifacts.provenance` names the GitHub Actions run that built the artifact, publication still checks the local artifact's size and SHA-256, and reading, promoting and resolving no longer require stored bytes for such a release. `githubActionsArtifactProvenance` reads that provenance from the runner's environment. Releases already stored with their bytes keep their byte check",
+					"symbols": [
+						"NativeReleaseRegistryOptions",
+						"githubActionsArtifactProvenance",
+						"NativeReleaseArtifactProvenance",
+						"ExternalNativeReleaseRecord",
+						"StoredNativeReleaseRecord"
+					]
+				},
+				{
+					"kind": "breaking",
+					"migration": {
+						"instruction": "Check for `\"artifactKey\" in record` before reading `record.artifactKey`; an external record has `record.artifact.provenance` instead.",
+						"manual": true
+					},
+					"summary": "`NativeReleaseRecord` is a union of `StoredNativeReleaseRecord` (with `artifactKey`) and `ExternalNativeReleaseRecord` (with `artifact.provenance`), so `artifactKey` is no longer present on every record",
+					"symbols": [
+						"NativeReleaseRecord"
+					]
+				}
+			],
+			"date": "2026-10-28",
+			"version": "0.33.0"
+		},
+		{
+			"changes": [
+				{
+					"kind": "added",
 					"summary": "A DigitalOcean fleet node is created in the next configured region when the chosen one refuses because it offers neither the size nor anything comparable (nyc3 offered no sizes at all on 2026-10-27), and `onRegionRefused` reports each refusal. Any other failure still stops at once, and a node pinned to one region still tries only that region",
 					"symbols": [
 						"createDigitalOceanInfrastructureProvider",
