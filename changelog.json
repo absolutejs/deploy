@@ -5,6 +5,20 @@
 		{
 			"changes": [
 				{
+					"detail": "`createReleaseArtifact` takes `compressionLevel` (1 to 9). Unset, it packs exactly as before (`tar -czf`, gzip's default 6). A level pipes `tar` into `gzip -N`, which both GNU and BusyBox tar support, and the archive unpacks the same way. Measured on a 76 MB Studio project tree: level 1 packs in 3.0 s instead of 7.2 s, for 42.3 MB instead of 39.2 MB. That suits an artifact copied straight to a nearby host, where packing time dominates.",
+					"kind": "added",
+					"summary": "createReleaseArtifact can pack at a chosen gzip level",
+					"symbols": [
+						"createReleaseArtifact"
+					]
+				}
+			],
+			"date": "2026-11-24",
+			"version": "0.34.0"
+		},
+		{
+			"changes": [
+				{
 					"kind": "fixed",
 					"summary": "`listDigitalOceanDroplets` follows every page of the droplet list. It read one page, which DigitalOcean caps at 20 droplets by default, so a fleet sync over a pool of more than 20 saw every droplet past the 20th as gone. A malformed page now fails the listing instead of shortening it. `listAllDigitalOcean` is the shared helper"
 				}

@@ -194,9 +194,9 @@ describe("release artifacts", () => {
       destination,
       excludeNames: ["node_modules"],
     });
-    expect(await Bun.file(path.join(destination, "web/index.ts")).exists()).toBe(
-      true,
-    );
+    expect(
+      await Bun.file(path.join(destination, "web/index.ts")).exists(),
+    ).toBe(true);
     await expect(
       readFile(path.join(destination, "web/node_modules/.bin/cross-env")),
     ).rejects.toThrow();
@@ -221,5 +221,47 @@ describe("release artifacts", () => {
         excludeNames: ["node_modules"],
       }),
     ).rejects.toThrow(/unsafe entry: l.*escape -> \/etc\/passwd/);
+  });
+});
+
+describe("a chosen compression level", () => {
+  test("packs at that level, round-trips like the default, and keeps exclusions", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(path.join(source, "src"), { recursive: true });
+    await Bun.write(path.join(source, "package.json"), '{"name":"site"}');
+    await Bun.write(
+      path.join(source, "src", "page.ts"),
+      "export const a = 1;\n".repeat(5_000),
+    );
+    await Bun.write(path.join(source, ".env"), "TOKEN=secret");
+    const fast = await createReleaseArtifact({
+      compressionLevel: 1,
+      excludeNames: [".env"],
+      sourceRoot: source,
+      temporaryRoot: root,
+    });
+    const extracted = path.join(root, "fast");
+    await extractReleaseArtifact({
+      archivePath: fast.path,
+      destination: extracted,
+    });
+    expect(await Bun.file(path.join(extracted, "src", "page.ts")).text()).toBe(
+      "export const a = 1;\n".repeat(5_000),
+    );
+    expect(await Bun.file(path.join(extracted, ".env")).exists()).toBe(false);
+    expect(fast.metadata.bytes).toBeGreaterThan(0);
+    await fast.dispose();
+  });
+
+  test("refuses a level outside 1 to 9", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await Bun.write(path.join(source, "package.json"), '{"name":"site"}');
+    for (const compressionLevel of [0, 10, 1.5])
+      await expect(
+        createReleaseArtifact({ compressionLevel, sourceRoot: source }),
+      ).rejects.toBeInstanceOf(ReleaseArtifactError);
   });
 });
