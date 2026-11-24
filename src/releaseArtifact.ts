@@ -36,6 +36,41 @@ const run = async (command: string[]) => {
   return stdout;
 };
 
+const MIN_COMPRESSION = 1;
+const MAX_COMPRESSION = 9;
+
+/* tar into gzip at a chosen level, through a pipe: BusyBox tar has no
+ * `-I`, and both tars write an archive `tar -xzf` reads the same way. */
+const packAtLevel = async (
+  selection: string[],
+  archivePath: string,
+  level: number,
+) => {
+  const tar = Bun.spawn(["tar", "-cf", "-", ...selection], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const gzip = Bun.spawn(["gzip", `-${level}`, "-c"], {
+    stderr: "pipe",
+    stdin: tar.stdout,
+    stdout: Bun.file(archivePath),
+  });
+  const [tarExit, gzipExit, tarError, gzipError] = await Promise.all([
+    tar.exited,
+    gzip.exited,
+    new Response(tar.stderr).text(),
+    new Response(gzip.stderr).text(),
+  ]);
+  if (tarExit !== 0)
+    throw new ReleaseArtifactError(
+      `tar failed (${tarExit}): ${tarError.slice(0, ERROR_DETAIL_LIMIT)}`,
+    );
+  if (gzipExit !== 0)
+    throw new ReleaseArtifactError(
+      `gzip failed (${gzipExit}): ${gzipError.slice(0, ERROR_DETAIL_LIMIT)}`,
+    );
+};
+
 const assertReleaseId = (value: string) => {
   if (!SAFE_RELEASE_ID.test(value))
     throw new ReleaseArtifactError("Release id is invalid");
@@ -85,6 +120,13 @@ export const createReleaseArtifact = async (options: {
    * cross `/`, so a nested `apps/web/.env` could not be excluded that way.
    */
   excludeNames?: string[];
+  /**
+   * gzip's level, 1 (fastest) to 9 (smallest). Unset is tar's default (6).
+   * An artifact copied straight to a nearby host is packed far more often
+   * than it is stored: a lower level packs a third faster for a few percent
+   * more bytes. Any level unpacks the same way.
+   */
+  compressionLevel?: number;
   releaseId?: string;
   sourceRoot: string;
   temporaryRoot?: string;
@@ -100,21 +142,29 @@ export const createReleaseArtifact = async (options: {
     path.join(options.temporaryRoot ?? tmpdir(), "absolutejs-release-"),
   );
   const archivePath = path.join(temporary, `${releaseId}.tgz`);
+  const level = options.compressionLevel;
+  if (
+    level !== undefined &&
+    (!Number.isInteger(level) ||
+      level < MIN_COMPRESSION ||
+      level > MAX_COMPRESSION)
+  )
+    throw new ReleaseArtifactError("Compression level must be 1 to 9");
+  const selection = [
+    ...(options.exclude ?? []).map(
+      (value) => `--exclude=./${assertExclude(value)}`,
+    ),
+    ...(options.excludeNames ?? []).map(
+      (value) => `--exclude=${assertExcludeName(value)}`,
+    ),
+    "-C",
+    source,
+    ".",
+  ];
   try {
-    await run([
-      "tar",
-      "-czf",
-      archivePath,
-      ...(options.exclude ?? []).map(
-        (value) => `--exclude=./${assertExclude(value)}`,
-      ),
-      ...(options.excludeNames ?? []).map(
-        (value) => `--exclude=${assertExcludeName(value)}`,
-      ),
-      "-C",
-      source,
-      ".",
-    ]);
+    if (level === undefined)
+      await run(["tar", "-czf", archivePath, ...selection]);
+    else await packAtLevel(selection, archivePath, level);
     const file = Bun.file(archivePath);
 
     return {
@@ -194,7 +244,10 @@ const MAX_ENTRY_DETAIL = 300;
  * `./core/node_modules/...` in. An exact path is honoured, with everything
  * under it, by both BusyBox and GNU tar.
  */
-const archiveExclusions = async (archivePath: string, excludeNames: string[]) => {
+const archiveExclusions = async (
+  archivePath: string,
+  excludeNames: string[],
+) => {
   if (excludeNames.length === 0) return [];
   const globs = excludeNames.map((name) => new Bun.Glob(name));
   const roots = new Set<string>();
